@@ -6,10 +6,10 @@ library(stringr)
 
 #A9 cluster
 driver <- JDBC("com.amazon.redshift.jdbc41.Driver", "RedshiftJDBC41-1.1.9.1009.jar", identifier.quote="`")
-#url <- "jdbc:redshift://a9dba-fin-rs2.db.amazon.com:8192/a9aws?user=maghuang&password=pw20160926NOW&tcpKeepAlive=true&ssl=true&sslfactory=org.postgresql.ssl.NonValidatingFactory"
+url <- "jdbc:redshift://a9dba-fin-rs2.db.amazon.com:8192/a9aws?user=maghuang&password=pw20160926NOW&tcpKeepAlive=true&ssl=true&sslfactory=org.postgresql.ssl.NonValidatingFactory"
 
 #AWS database
-url <- "jdbc:postgresql://54.85.28.62:8192/datamart?user=maghuang&password=Youcan88$&tcpKeepAlive=true"
+#url <- "jdbc:postgresql://54.85.28.62:8192/datamart?user=maghuang&password=Youcan88$&tcpKeepAlive=true"
 
 
 
@@ -961,7 +961,7 @@ getDomainDiff <- function(week, customerList) {
   
   w <- merge(w, customerList[,c("account_id", "company")], by="account_id", all.x=TRUE)
   
-  w <-aggregate(w$diff, by=list(w$company), FUN=sum)
+  w <- aggregate(cbind(diff, d1, d2) ~ company, data=w, sum)
   
   return (w)
 }
@@ -971,6 +971,8 @@ getCustomerDiff <- function(week, customerList) {
     message("Please pass in customer data")
     return ()
   }
+  customerList <- within(customerList, payer_account_id <- ifelse(is.na(payer_account_id), account_id, payer_account_id))
+  
   if (missing(week)) {
     week = weeknum() -1
   }
@@ -979,41 +981,63 @@ getCustomerDiff <- function(week, customerList) {
   
   message("- Connected to DB.")
   
-  SQL <- paste("select DISTINCT year, week, account_id, usage_resource
-               from a9cs_metrics.es_weekly_metering
-               where week in ('", week,"', '", week - 1, "') and year = '2016' and is_internal_flag = 'N'", sep="")
+  SQL <- paste("select * from a9cs_metrics.es_new_inactive_customers where year = '2016'
+               and week in ('", week, "')
+               and is_internal_flag = 'N'", sep="")
   
   message("SQL = ", SQL)
   
-  message("- Running query: weekly domain count data...")
-  t <- dbGetQuery(conn, SQL)
+  message("- Running query: weekly inactive customer count data...")
+  inactive_cust <- dbGetQuery(conn, SQL)
+  inactive_cust$account_id <- str_pad(as.character(inactive_cust$account_id), 12, pad="0")
   
-  message("- Query succeed: weekly domain count data retrieved.")
+  message("- Query succeed: weekly inactive customer count data retrieved.")
+  
+  
+  SQL <- paste("select * from a9cs_metrics.es_new_active_customers where year = '2016'
+               and week in ('", week, "')
+               and is_internal_flag = 'N'", sep="")
+  
+  message("SQL = ", SQL)
+  
+  message("- Running query: weekly active customer count data...")
+  active_cust <- dbGetQuery(conn, SQL)
+  active_cust$account_id <- str_pad(as.character(active_cust$account_id), 12, pad="0")
+  
+  message("- Query succeed: weekly inactive customer count data retrieved.")
+  
   dbDisconnect(conn)
   
-  t$account_id <- str_pad(as.character(t$account_id), 12, pad="0")
   
-  w1 <- t[t$week == week-1, ]
-  w2 <- t[t$week == week, ]
+  # get payer_account_id for account_id
+  inactive_cust <- merge(inactive_cust, customerList, by=c("account_id"), all.x=TRUE)
+  active_cust <- merge(active_cust, customerList, by=c("account_id"), all.x=TRUE)
   
-  w1 <- aggregate(w1$usage_resource, by=list(w1$account_id), FUN=length)
-  w2 <- aggregate(w2$usage_resource, by=list(w2$account_id), FUN=length)
   
-  names(w1)[1] <- "account_id"
-  names(w1)[2] <- "d1"
-  names(w2)[1] <- "account_id"
-  names(w2)[2] <- "d2"
+  ### process the new inactive customer data
   
-  w <- merge(w1, w2, by="account_id", all=TRUE)
+  inactive_cust <- aggregate(inactive_cust$account_id, by=list(inactive_cust$payer_account_id), FUN=length)
+  
+  names(inactive_cust)[1] <- "account_id"
+  names(inactive_cust)[2] <- "inactive_cnt"
+  
+  
+  ### process the new active customer data
+ 
+  
+  active_cust <- aggregate(active_cust$account_id, by=list(active_cust$payer_account_id), FUN=length)
+  
+  names(active_cust)[1] <- "account_id"
+  names(active_cust)[2] <- "active_cnt"
+  
+ 
+  w <- merge(active_cust, inactive_cust, by=c("account_id"), all=TRUE)
   
   w[is.na(w)] <- 0
-  w$diff <- w$d2 - w$d1
-  
+  w$diff <- w$active_cnt - w$inactive_cnt
   
   w <- merge(w, customerList[,c("account_id", "company")], by="account_id", all.x=TRUE)
-  
-  w <-aggregate(w$diff, by=list(w$company), FUN=sum)
-  
+  w <- aggregate(diff ~ company, data=w, sum)
   return (w)
 }
 
