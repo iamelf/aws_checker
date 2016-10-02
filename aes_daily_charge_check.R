@@ -257,61 +257,61 @@ getDailyCharge <- function(dateStr) {
                       ORDER  BY acct.account_id ASC", sep="")
     
     
-    # sqldaily <- paste("SELECT fct.computation_date,
-    #    opp.client_product_code,
-    #                   fct.charge_item_desc,
-    #                   acct.account_id,
-    #                   pacct.payer_account_id                                 AS PAYER_ID,
-    #                   fct.charge_period_start_date,
-    #                   fct.charge_period_end_date,
-    #                   product.product_code,
-    #                   ut.usage_type,
-    #                   sum(fct.usage_value * fct.amortization_factor)   AS usage_value,
-    #                   opp.pricing_plan_id,
-    #                   opp.offering_id,
-    #                   opp.rate_id,
-    #                   Sum(fct.billed_amount * fct.amortization_factor) AS billed_amount,
-    #                   op.operation,
-    #                   opp.price_per_unit,
-    #                   fct.credit_id,
-    #                   rm.region,
-    #                   acct.is_internal_flag
-    #                   FROM   fact_aws_daily_est_revenue_current fct,
-    #                   dim_aws_accounts acct,
-    #                   dim_aws_accounts pacct,
-    #                   dim_aws_offering_pricing_plans opp,
-    #                   dim_aws_usage_types ut,
-    #                   dim_aws_operations op,
-    #                   es_region_mapping rm,
-    #                   dim_aws_products product
-    #                   WHERE  fct.account_seq_id = acct.account_seq_id
-    #                   AND fct.payer_account_seq_id = pacct.account_seq_id
-    #                   AND fct.offering_pricing_plan_seq_id = opp.offering_pricing_plan_seq_id
-    #                   AND fct.usage_type_seq_id = ut.usage_type_seq_id
-    #                   AND fct.operation_seq_id = op.operation_seq_id
-    #                   AND fct.operation_seq_id = op.operation_seq_id
-    #                   AND product.product_seq_id = fct.product_seq_id
-    #                   AND product.product_code = 'AmazonES'
-    #                   AND ut.usage_type = rm.usage_type
-    #                   AND fct.computation_date = ('", dateStr,"')
-    #                   GROUP  BY fct.computation_date,
-    #                   opp.client_product_code,
-    #                   fct.charge_item_desc,
-    #                   acct.account_id,
-    #                   pacct.payer_account_id,
-    #                   fct.charge_period_start_date,
-    #                   fct.charge_period_end_date,
-    #                   product.product_code,
-    #                   ut.usage_type,
-    #                   opp.pricing_plan_id,
-    #                   opp.offering_id,
-    #                   opp.rate_id,
-    #                   op.operation,
-    #                   opp.price_per_unit,
-    #                   fct.credit_id,
-    #                   rm.region,
-    #                   acct.is_internal_flag
-    #                   ORDER  BY acct.account_id ASC", sep="")
+    sqldaily <- paste("SELECT fct.computation_date,
+       opp.client_product_code,
+                      fct.charge_item_desc,
+                      acct.account_id,
+                      pacct.payer_account_id                                 AS PAYER_ID,
+                      fct.charge_period_start_date,
+                      fct.charge_period_end_date,
+                      product.product_code,
+                      ut.usage_type,
+                      sum(fct.usage_value * fct.amortization_factor)   AS usage_value,
+                      opp.pricing_plan_id,
+                      opp.offering_id,
+                      opp.rate_id,
+                      Sum(fct.billed_amount * fct.amortization_factor) AS billed_amount,
+                      op.operation,
+                      opp.price_per_unit,
+                      fct.credit_id,
+                      rm.region,
+                      acct.is_internal_flag
+                      FROM   fact_aws_daily_est_revenue_current fct,
+                      dim_aws_accounts acct,
+                      dim_aws_accounts pacct,
+                      dim_aws_offering_pricing_plans opp,
+                      dim_aws_usage_types ut,
+                      dim_aws_operations op,
+                      es_region_mapping rm,
+                      dim_aws_products product
+                      WHERE  fct.account_seq_id = acct.account_seq_id
+                      AND fct.payer_account_seq_id = pacct.account_seq_id
+                      AND fct.offering_pricing_plan_seq_id = opp.offering_pricing_plan_seq_id
+                      AND fct.usage_type_seq_id = ut.usage_type_seq_id
+                      AND fct.operation_seq_id = op.operation_seq_id
+                      AND fct.operation_seq_id = op.operation_seq_id
+                      AND product.product_seq_id = fct.product_seq_id
+                      AND product.product_code = 'AmazonES'
+                      AND ut.usage_type = rm.usage_type
+                      AND fct.computation_date = ('", dateStr,"')
+                      GROUP  BY fct.computation_date,
+                      opp.client_product_code,
+                      fct.charge_item_desc,
+                      acct.account_id,
+                      pacct.payer_account_id,
+                      fct.charge_period_start_date,
+                      fct.charge_period_end_date,
+                      product.product_code,
+                      ut.usage_type,
+                      opp.pricing_plan_id,
+                      opp.offering_id,
+                      opp.rate_id,
+                      op.operation,
+                      opp.price_per_unit,
+                      fct.credit_id,
+                      rm.region,
+                      acct.is_internal_flag
+                      ORDER  BY acct.account_id ASC", sep="")
 
     
     message("- Running query: daily revenue data...")
