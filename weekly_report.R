@@ -849,7 +849,7 @@ calcGainer <- function(week, year, customerList) {
   
   gainer <- head(rev, 30)
   
-  gainer <- gainer[, c(1, 2, 7, 5, 6, 3, 4, 5, 6)]
+  gainer <- gainer[, c(1, 2, 7, 4, 3, 6, 5, 4, 3)]
   
   sepLine <- data.frame(account_id = "------------",
                         company = "------------",
@@ -861,6 +861,8 @@ calcGainer <- function(week, year, customerList) {
   
   loser <- tail(rev, 30)
   loser <- loser[order(loser$diff), ]
+  
+  loser <- loser[, c(1, 2, 7, 4, 3, 6, 5, 4, 3)]
   
   chrg <- bind_rows(gainer, sepLine, loser)
   # write to csv
