@@ -4,6 +4,7 @@ library(jsonlite)
 library(elastic)
 library(stringr)
 
+
 #A9 cluster
 driver <- JDBC("com.amazon.redshift.jdbc41.Driver", "RedshiftJDBC41-1.1.9.1009.jar", identifier.quote="`")
 url <- "jdbc:redshift://a9dba-fin-rs2.db.amazon.com:8192/a9aws?user=maghuang&password=pw20160926NOW&tcpKeepAlive=true&ssl=true&sslfactory=org.postgresql.ssl.NonValidatingFactory"
@@ -87,6 +88,89 @@ dailyGainer <- function (dateStr, customerList) {
   
   chrg <- merge(ag1, ag2, by="account_id", all=TRUE)
   chrg <- merge(chrg, cust, by="account_id", all.x=TRUE)
+  
+  chrg[is.na(chrg)] <- 0
+  
+  chrg[,"diff"] <- chrg["charge_today"] - chrg["charge_yesterday"]
+  chrg <- chrg[order(-chrg$diff),]
+  chrg$date <- dateStr
+  
+  return (chrg)
+}
+
+
+dailyUsageDiff <- function (dateStr, customerList) {
+  if (missing(dateStr)) {
+    t<- Sys.Date()-1
+  } else {
+    t <- as.Date(dateStr) 
+    if (abs(as.integer(Sys.Date()-t)) > 100) {
+      message("Wrong date string: ", dateStr)
+      return()
+    }
+  }
+  
+  d1 <- format(t-1, "%Y-%m-%d")
+  d2 <- format(t, "%Y-%m-%d")
+  dateStr <- d2
+  
+  t1 <- getDailyCharge(d1)
+  t1 <- t1[t1$is_internal_flag=="N",]
+  t2 <- getDailyCharge(d2)
+  t2 <- t2[t2$is_internal_flag=="N",]
+  
+  ag1 <- aggregate(t1$usage_value, by=list(t1$usage_type), FUN=sum)
+  ag2 <- aggregate(t2$usage_value, by=list(t2$usage_type), FUN=sum)
+  
+  
+  colnames(ag1)[1] <- "usage_type"
+  colnames(ag1)[2] <- "usage_yesterday"
+  colnames(ag2)[1] <- "usage_type"
+  colnames(ag2)[2] <- "usage_today"
+  
+  chrg <- merge(ag1, ag2, by="usage_type", all=TRUE)
+  
+  chrg[is.na(chrg)] <- 0
+  
+  chrg[,"diff"] <- chrg["usage_today"] - chrg["usage_yesterday"]
+  chrg <- chrg[order(-chrg$diff),]
+  chrg$date <- dateStr
+  
+  return (chrg)
+}
+
+dailyUsageChargeDiff <- function (dateStr) {
+  if (missing(dateStr)) {
+    t<- Sys.Date()-1
+  } else {
+    t <- as.Date(dateStr) 
+    if (abs(as.integer(Sys.Date()-t)) > 100) {
+      message("Wrong date string: ", dateStr)
+      return()
+    }
+  }
+  
+  
+  d1 <- format(t-1, "%Y-%m-%d")
+  d2 <- format(t, "%Y-%m-%d")
+  dateStr <- d2
+  
+  t1 <- getDailyCharge(d1)
+  t1 <- t1[t1$is_internal_flag=="N",]
+  t2 <- getDailyCharge(d2)
+  t2 <- t2[t2$is_internal_flag=="N",]
+  
+  ag1 <- aggregate(t1$billed_amount, by=list(t1$usage_type), FUN=sum)
+  ag2 <- aggregate(t2$billed_amount, by=list(t2$usage_type), FUN=sum)
+  
+  
+  colnames(ag1)[1] <- "usage_type"
+  colnames(ag1)[2] <- "charge_yesterday"
+  colnames(ag2)[1] <- "usage_type"
+  colnames(ag2)[2] <- "charge_today"
+  
+  chrg <- merge(ag1, ag2, by="usage_type", all=TRUE)
+  
   
   chrg[is.na(chrg)] <- 0
   
@@ -313,7 +397,7 @@ getDailyCharge <- function(dateStr) {
                       acct.is_internal_flag
                       ORDER  BY acct.account_id ASC", sep="")
 
-    
+
     message("- Running query: daily revenue data...")
     t <- dbGetQuery(conn, sqldaily)
     t$account_id <- str_pad(as.character(t$account_id), 12, pad="0")
@@ -496,11 +580,61 @@ loadDaily2ES <- function(dateStr, nDay=1, customerList) {
                     }
                     }
                     }
+                }', sep="")
+      index_create(indexName, body=body)      
+      docs_bulk(dt, indexName)
+      message("Index ", indexName, " loading complete!")
+    }
+    
+    indexName <- paste("usage-diff-", dateStr,sep="")
+    
+    if (index_exists(indexName)) {
+      message("Index ", indexName, " already exists. Skip loading.")
+    } else {
+      message("Loading index ", indexName, " into Elasticsearch...")
+      dt <- dailyUsageDiff(dateStr)
+      # create index with mapping
+      body <- paste('{
+                    "settings" : {
+                    "number_of_shards" : 1
+                    },
+                    "mappings": {
+                    "', indexName, '": {
+                    "properties": {
+                    "usage_type" : {"type" : "string", "index":  "not_analyzed"}
+                    }
+                    }
+                    }
     }', sep="")
       index_create(indexName, body=body)      
       docs_bulk(dt, indexName)
       message("Index ", indexName, " loading complete!")
-      }
+    }
+    
+    indexName <- paste("usage-charge-diff-", dateStr,sep="")
+    
+    if (index_exists(indexName)) {
+      message("Index ", indexName, " already exists. Skip loading.")
+    } else {
+      message("Loading index ", indexName, " into Elasticsearch...")
+      dt <- dailyUsageChargeDiff(dateStr)
+      # create index with mapping
+      body <- paste('{
+                    "settings" : {
+                    "number_of_shards" : 1
+                    },
+                    "mappings": {
+                    "', indexName, '": {
+                    "properties": {
+                    "usage_type" : {"type" : "string", "index":  "not_analyzed"}
+                    }
+                    }
+                    }
+    }', sep="")
+      index_create(indexName, body=body)      
+      docs_bulk(dt, indexName)
+      message("Index ", indexName, " loading complete!")
+    }
     
   }
 }
@@ -520,6 +654,7 @@ getCustomerData <- function () {
     message("Reading customer data from file: ", fpath)
     t <- read.csv(fpath, sep=",")
     t$account_id <- str_pad(as.character(t$account_id), 12, pad="0")
+    t$payer_account_id <- str_pad(as.character(t$payer_account_id), 12, pad="0")
   } else {
     conn <- dbConnect(driver, url)
     message("- Connected to DB.")
@@ -557,8 +692,6 @@ getCustomerData <- function () {
     write.csv(t, fpath, sep=",")
     message("Customer data saved to file: ", fpath)
   }
-  
-  t <- within(t, account_id <- ifelse(is.na(payer_account_id), account_id, payer_account_id))
   return(t)
 }
 
@@ -608,6 +741,11 @@ getWeeklyUsage <- function (week) {
 # get the top customer by revenue $ in the past 7 days by region
 topCustomerByRegion <- function (week, customerList) {
   
+  if (missing(customerList)) {
+    message("Please pass in the customer data!")
+    return ();
+  }
+  
   message("Generating top customer list by region...")
   
   if (missing(week)) {
@@ -644,10 +782,7 @@ topCustomerByRegion <- function (week, customerList) {
   
   rm(usage)
   
-  if (missing(customerList)) {
-    message("Please pass in the customer data!")
-    return ();
-  }
+  
   cust <- customerList[, c("account_id", "company", "email")]
   cust$account_id <- str_pad(as.character(cust$account_id), 12, pad="0")
   
@@ -704,13 +839,33 @@ topCustomerByRegion <- function (week, customerList) {
   message("Top customer lists saved to ", zipname)
 }
 
-getCustomerCharge <- function() {
+getCustomerCharge <- function(account_id, customerList) {
+  
+  if (missing(customerList)) {
+    message("Please pass in customer information")
+    return (-1)
+  }
+  
+  payer <- customerList[customerList$account_id == account_id, ]$payer_account_id
+  if (is.na(payer)) {
+    payer <- account_id
+  }
+  
+  all_accounts <- filter(customerList, payer_account_id == payer)$account_id
+  
+  
+  
+  queryStr <- paste("'", all_accounts[1], "'", sep = "")
+  for (i in all_accounts) {
+    queryStr<- paste(queryStr, ", '", i, "'", sep = "")
+  }
+  
   
   conn <- dbConnect(driver, url)
   
   message("- Connected to DB.")
   
-  SQL <- "select computation_date, 
+  SQL <- paste("select computation_date, 
             client_product_code, 
             account_id, 
             usage_type, 
@@ -720,98 +875,7 @@ getCustomerCharge <- function() {
             price_per_unit,
             region from es_daily_charges
             where computation_date >= '2016-01-01' 
-              and account_id in ('722540224687',
-'367882062030',
-  '886742465196',
-  '427611505756',
-  '344503418303',
-  '977620560770',
-  '800465565689',
-  '833796158984',
-  '965290038272',
-  '990204637984',
-  '256808726229',
-  '892296184172',
-  '214166976175',
-  '714504654750',
-  '340570456704',
-  '463478341356',
-  '962759010151',
-  '851922608260',
-  '107238057856',
-  '212968118915',
-  '314421762452',
-  '966387110525',
-  '952994696406',
-  '786449471927',
-  '775765197955',
-  '471776437675',
-  '659462310789',
-  '603685489774',
-  '570523891010',
-  '605110269330',
-  '395465541298',
-  '261268907328',
-  '497227438761',
-  '892396124063',
-  '501546171321',
-  '820177904828',
-  '590978046680',
-  '345319436668',
-  '267195529823',
-  '812468907622',
-  '418414765008',
-  '387088208029',
-  '615387801953',
-  '419946874844',
-  '450104773729',
-  '642929875333',
-  '236584345765',
-  '046053258672',
-  '176432585595',
-  '392000500072',
-  '770274157546',
-  '422623566049',
-  '039630259482',
-  '190484967882',
-  '395544168725',
-  '199732321943',
-  '919804904455',
-  '539901827853',
-  '586172187931',
-  '123482607477',
-  '262183788580',
-  '626486983907',
-  '742719404221',
-  '963814808142',
-  '332606211215',
-  '330329065072',
-  '710325466943',
-  '673476365803',
-  '993959151619',
-  '423241472678',
-  '523438197804',
-  '066278830391',
-  '593046055286',
-  '299115011074',
-  '974251968641',
-  '790487245689',
-  '686094596772',
-  '905256724339',
-  '752804073848',
-  '932848889385',
-  '486577600504',
-  '395673421953',
-  '092709560089',
-  '989469722766',
-  '036144204953',
-  '739250980072',
-  '718910493532',
-  '777677697835',
-  '003026166093',
-  '908517871825',
-  '034858519100',
-  '731760247069')"
+              and account_id in (", queryStr,")", sep = "")
   
   message("- Running query: weekly usage data...")
   t <- dbGetQuery(conn, SQL)
@@ -820,7 +884,6 @@ getCustomerCharge <- function() {
   dbDisconnect(conn)
   
  return(t)
-  
 }
 
 getPricePlan <- function(id) {
@@ -901,9 +964,11 @@ getSQLData <- function() {
   
   message("- Connected to DB.")
   
-  SQL <- "select DISTINCT year, week, account_id, usage_resource, is_internal_flag
-          from a9cs_metrics.es_weekly_metering
-          where week = '35' and year = '2016' and is_internal_flag = 'N'"
+  SQL <- "select computation_date, account_id, usage_type, usage_value, billed_amount
+          from a9cs_metrics.es_daily_charges
+          where account_id = '786458385660'
+          and computation_date >= '2016-07-01'
+          and computation_date < '2016-08-01'"
   
   message("- Running query: weekly usage data...")
   t <- dbGetQuery(conn, SQL)
@@ -930,7 +995,7 @@ getDomainDiff <- function(week, customerList) {
   
   SQL <- paste("select DISTINCT year, week, account_id, usage_resource
   from a9cs_metrics.es_weekly_metering
-  where week in ('", week,"', '", week - 1, "') and year = '2016' and is_internal_flag = 'N'", sep="")
+  where week in ('", week,"', '", week - 1, "') and year = '2016' and is_internal_flag = 'Y'", sep="")
   
   message("SQL = ", SQL)
   
@@ -1012,7 +1077,6 @@ getCustomerDiff <- function(week, customerList) {
   # get payer_account_id for account_id
   inactive_cust <- merge(inactive_cust, customerList, by=c("account_id"), all.x=TRUE)
   active_cust <- merge(active_cust, customerList, by=c("account_id"), all.x=TRUE)
-  
   
   ### process the new inactive customer data
   
