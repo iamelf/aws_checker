@@ -21,10 +21,15 @@ metricsFilePath <- file.path(dataPath, "weekly_metrics.csv")
 creditsFilePath <- file.path(dataPath, "weekly_credits.csv")
 customerFilePath <- file.path(dataPath, "top_customers.csv")
 gainerFilePath <- file.path(dataPath, "gainer_loser.csv")
-ec2countFilePath <- file.path(dataPath, "ec2count.csv")
+
 
 # Input files
-priceFilePath <- file.path(dataPath, "prices.csv")
+priceFilePath <- file.path(dataPath, "_input_prices.csv")
+testAccountFilePath <- file.path(dataPath, "_input_test_accounts.csv")
+goalFile <- paste("_input_es_goal_", as.integer(format(Sys.Date(), "%Y")), ".csv", sep="")
+goalFilePath <- file.path(dataPath, goalFile)
+ec2countFilePath <- file.path(dataPath, "_input_ec2count.csv")
+
 
 weeknum <- function(dateStr=Sys.Date()) {
   
@@ -59,13 +64,9 @@ translateRegion <- function (alias) {
 }
 
 
-getTestAccounts <- function(week) {
-  if (missing(week)) {
-    week = weeknum() -1
-  }
-  fname <- "test_accounts.csv"
-  fpath <- file.path(dataPath, fname)
-  t <- read.csv(fpath)
+getTestAccounts <- function() {
+  
+  t <- read.csv(testAccountFilePath)
   t$account_id <- str_pad(as.character(t$account_id), 12, pad="0")
   return (t)
 }
@@ -80,8 +81,7 @@ getGoal <- function(week, year) {
   }
   
   # Get the weekly customer goal
-  goalFile <- paste("es-goal-", year, ".csv", sep="")
-  goalFilePath <- file.path(dataPath, goalFile)
+  
   esGoal <- read.csv(goalFilePath)
   esGoal <- esGoal[esGoal$week == week,]
   return (esGoal)
