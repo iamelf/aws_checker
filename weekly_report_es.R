@@ -21,6 +21,7 @@ metricsFilePath <- file.path(dataPath, "weekly_metrics.csv")
 creditsFilePath <- file.path(dataPath, "weekly_credits.csv")
 customerFilePath <- file.path(dataPath, "top_customers.csv")
 gainerFilePath <- file.path(dataPath, "gainer_loser.csv")
+ec2countFilePath <- file.path(dataPath, "ec2count.csv")
 
 # Input files
 priceFilePath <- file.path(dataPath, "prices.csv")
@@ -170,7 +171,7 @@ getWeeklyCharges <- function(week, year) {
     t$account_id <- str_pad(as.character(t$account_id), 12, pad="0")
   } else {
     SQL <- paste("select account_id, 
-              is_internal_flag, 
+                 is_internal_flag, 
                  billed_amount, 
                  usage_type, 
                  region, 
@@ -221,7 +222,7 @@ getWeeklyMetering <- function(week, year) {
     t$account_id <- str_pad(as.character(t$account_id), 12, pad="0")
   } else {
     SQL <- paste("select account_id, sum(usage_value) as sum_usage_value, week, year, is_internal_flag, usage_resource, usage_type, region
-                from a9cs_metrics.es_weekly_metering
+                 from a9cs_metrics.es_weekly_metering
                  where year = '", year, "' and week = '", week,"' 
                  and usage_type like '%ESInstance%'
                  group by account_id, week, year, usage_resource, usage_type, is_internal_flag, region;", sep = "")
@@ -233,7 +234,7 @@ getWeeklyMetering <- function(week, year) {
     message("- Running query: weekly metering data...")
     t <- dbGetQuery(conn, SQL)
     t$account_id <- str_pad(as.character(t$account_id), 12, pad="0")
-   
+    
     dbDisconnect(conn)
     write.csv(t, fpath)
   }
@@ -439,7 +440,7 @@ countInstanceUsage <- function(week = weeknum()-1, year = as.integer(format(Sys.
   meter <- getWeeklyMetering(week, year)
   charge_account <- getWeeklyCharges(week, year)$account_id
   testAccount <- getTestAccounts()
-
+  
   # Clean up the usaage date 
   # by excluding all the suspended accounts (accounts that are not in charge data)
   meter <- subset(meter, !(account_id %in% testAccount$account_id))
@@ -573,15 +574,15 @@ countRevenue <- function(week, year, customerList) {
   top_internal_customers <- merge(top_internal_customers, customerList[,c("account_id", "company")], by = c("account_id"), all.x = TRUE)
   top_internal_customers <- arrange(top_internal_customers,desc(billed_amount))
   
-  x$top_internal_customer_1 = top_internal_customers$account_id[1]
+  x$top_internal_customer_1 = str_pad(as.character(top_internal_customers$account_id[1]), 12, pad="0")
   x$top_internal_customer_1_revenue = top_internal_customers$billed_amount[1]
-  x$top_internal_customer_2 = top_internal_customers$account_id[2]
+  x$top_internal_customer_2 = str_pad(as.character(top_internal_customers$account_id[2]), 12, pad="0")
   x$top_internal_customer_2_revenue = top_internal_customers$billed_amount[2]
-  x$top_internal_customer_3 = top_internal_customers$account_id[3]
+  x$top_internal_customer_3 = str_pad(as.character(top_internal_customers$account_id[3]), 12, pad="0")
   x$top_internal_customer_3_revenue = top_internal_customers$billed_amount[3]
-  x$top_internal_customer_4 = top_internal_customers$account_id[4]
+  x$top_internal_customer_4 = str_pad(as.character(top_internal_customers$account_id[4]), 12, pad="0")
   x$top_internal_customer_4_revenue = top_internal_customers$billed_amount[4]
-  x$top_internal_customer_5 = top_internal_customers$account_id[5]
+  x$top_internal_customer_5 = str_pad(as.character(top_internal_customers$account_id[5]), 12, pad="0")
   x$top_internal_customer_5_revenue = top_internal_customers$billed_amount[5]
   
   x$week <- NULL
@@ -698,13 +699,34 @@ countEC2 <- function(week, year) {
     year = as.integer(format(Sys.Date(), "%Y"))
   }
   
+  if (week != weeknum() - 1) {
+    if (!file.exists(ec2countFilePath)) {
+      message("Can't calculate historical ec2 account #. Please find historical ec2 account data ec2count.csv")
+      return (-1)
+    }
+    t <- read.csv(ec2countFilePath)
+    x <- t[t$week == week, ]
+    x <- x[x$year == year, ]
+    if (nrow(x) == 0) {
+      message("Can't locate ec2 count for week ", week, "in ec2count.csv")
+      return (-1)
+    }
+    return (x[, c("ec2_count","es_ec2_count")])
+  }
+  
+  t <- read.csv(ec2countFilePath)
+  x <- t[t$week == week, ]
+  x <- x[x$year == year, ]
+  if (nrow(x) > 0) {
+    return(x[, c("ec2_count","es_ec2_count")])
+  }
+  
   testAccount <- getTestAccounts()
-  x <- data_frame(week = week)
   
   conn <- dbConnect(driver, url)
   
   # Get EC2 developer count
-  SQL <- paste("SELECT count(DISTINCT acct_dim.account_id)
+  SQL <- paste("SELECT DISTINCT acct_dim.account_id
                FROM a9cs_metrics.fact_aws_weekly_est_revenue f
                INNER JOIN a9cs_metrics.DIM_AWS_ACTIVITY_TYPES DIM_ACT ON F.ACTIVITY_TYPE_ID = DIM_ACT.ACTIVITY_TYPE_ID
                INNER JOIN a9cs_metrics.DIM_EC2_ACCOUNTS acct_dim ON f.account_seq_id = acct_dim.account_seq_id
@@ -718,14 +740,27 @@ countEC2 <- function(week, year) {
                AND acct_dim.account_status_code='Active' -- taking Active instead of Non-Suspended, as we have N/A and Dev Token", sep = "")
   
   message("Getting EC2 developer count. ")
-  t <- dbGetQuery(conn, SQL)
-  x$ec2_count <- t$count
-  
-  message("- Query succeed: ec2 dev count retrieved.")
+  ec2_accounts <- dbGetQuery(conn, SQL)
   dbDisconnect(conn)
   
-  x$week <- NULL
-  return (x)
+  chrg_account <- getWeeklyCharges (week, year)$account_id
+  chrg_account <- setdiff(chrg_account, testAccount)
+  
+  y <- unique(intersect(ec2_accounts$account_id, chrg_account))
+  
+  x <- data_frame(year = year,
+                  week = week,
+                  ec2_count = nrow(ec2_accounts),
+                  es_ec2_count = length(y))
+  
+  
+  m <- bind_rows(t, x)
+  m <- m[order(m$year, m$week), ]
+  write.csv(m, ec2countFilePath)
+  
+  message("- Query succeed: ec2 dev count retrieved.")
+  
+  return (x[, c("ec2_count","es_ec2_count")])
 }
 
 
@@ -932,7 +967,7 @@ calcCredits <- function(week, year, customerList) {
                         company = "other",
                         charge_item_desc = "",
                         billed_amount = other_credits)
-    
+  
   credits <- bind_rows(credits, sum_row)
   
   #write to weekly report
@@ -1090,16 +1125,16 @@ countCost <- function(week, year) {
   
   #calculate the total cost
   x <- data.frame(overall_cost = sum(ec2_cost, 
-                    ebs_cost, 
-                    elb_cost, 
-                    monitor_cost, 
-                    s3_cost, 
-                    dynamo_cost, 
-                    swf_cost, 
-                    cf_cost,
-                    r53_cost,
-                    band_cost, 
-                    sales_cost))
+                                     ebs_cost, 
+                                     elb_cost, 
+                                     monitor_cost, 
+                                     s3_cost, 
+                                     dynamo_cost, 
+                                     swf_cost, 
+                                     cf_cost,
+                                     r53_cost,
+                                     band_cost, 
+                                     sales_cost))
   # Calculate margin, 
   # Following the assumption in Yana's model:
   # The cost for internal & external customer are propotional to their revenue
@@ -1110,7 +1145,7 @@ countCost <- function(week, year) {
 }
 
 calcWeeklyStats <- function(week, year) {
-
+  
   if (missing(week)) {
     week = weeknum() - 1
   }
@@ -1179,4 +1214,4 @@ calcWeeklyStatsN <- function(week, year, nWeek = 1) {
   }
   return (t)
 }
-  
+

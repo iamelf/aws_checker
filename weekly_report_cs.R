@@ -170,7 +170,7 @@ getWeeklyCharges <- function(week, year) {
     t$account_id <- str_pad(as.character(t$account_id), 12, pad="0")
   } else {
     SQL <- paste("select account_id, 
-              is_internal_flag, 
+                 is_internal_flag, 
                  billed_amount, 
                  usage_type, 
                  region, 
@@ -221,7 +221,7 @@ getWeeklyMetering <- function(week, year) {
     t$account_id <- str_pad(as.character(t$account_id), 12, pad="0")
   } else {
     SQL <- paste("select account_id, sum(usage_value) as sum_usage_value, week, year, is_internal_flag, usage_resource, usage_type, region
-                from a9cs_metrics.es_weekly_metering
+                 from a9cs_metrics.es_weekly_metering
                  where year = '", year, "' and week = '", week,"' 
                  and usage_type like '%ESInstance%'
                  group by account_id, week, year, usage_resource, usage_type, is_internal_flag, region;", sep = "")
@@ -233,7 +233,7 @@ getWeeklyMetering <- function(week, year) {
     message("- Running query: weekly metering data...")
     t <- dbGetQuery(conn, SQL)
     t$account_id <- str_pad(as.character(t$account_id), 12, pad="0")
-   
+    
     dbDisconnect(conn)
     write.csv(t, fpath)
   }
@@ -439,7 +439,7 @@ countInstanceUsage <- function(week = weeknum()-1, year = as.integer(format(Sys.
   meter <- getWeeklyMetering(week, year)
   charge_account <- getWeeklyCharges(week, year)$account_id
   testAccount <- getTestAccounts()
-
+  
   # Clean up the usaage date 
   # by excluding all the suspended accounts (accounts that are not in charge data)
   meter <- subset(meter, !(account_id %in% testAccount$account_id))
@@ -718,8 +718,7 @@ countEC2 <- function(week, year) {
                AND acct_dim.account_status_code='Active' -- taking Active instead of Non-Suspended, as we have N/A and Dev Token", sep = "")
   
   message("Getting EC2 developer count. ")
-  t <- dbGetQuery(conn, SQL)
-  x$ec2_count <- t$count
+  x$ec2_count <- dbGetQuery(conn, SQL)$count
   
   message("- Query succeed: ec2 dev count retrieved.")
   dbDisconnect(conn)
@@ -932,7 +931,7 @@ calcCredits <- function(week, year, customerList) {
                         company = "other",
                         charge_item_desc = "",
                         billed_amount = other_credits)
-    
+  
   credits <- bind_rows(credits, sum_row)
   
   #write to weekly report
@@ -1090,16 +1089,16 @@ countCost <- function(week, year) {
   
   #calculate the total cost
   x <- data.frame(overall_cost = sum(ec2_cost, 
-                    ebs_cost, 
-                    elb_cost, 
-                    monitor_cost, 
-                    s3_cost, 
-                    dynamo_cost, 
-                    swf_cost, 
-                    cf_cost,
-                    r53_cost,
-                    band_cost, 
-                    sales_cost))
+                                     ebs_cost, 
+                                     elb_cost, 
+                                     monitor_cost, 
+                                     s3_cost, 
+                                     dynamo_cost, 
+                                     swf_cost, 
+                                     cf_cost,
+                                     r53_cost,
+                                     band_cost, 
+                                     sales_cost))
   # Calculate margin, 
   # Following the assumption in Yana's model:
   # The cost for internal & external customer are propotional to their revenue
@@ -1110,7 +1109,7 @@ countCost <- function(week, year) {
 }
 
 calcWeeklyStats <- function(week, year) {
-
+  
   if (missing(week)) {
     week = weeknum() - 1
   }
@@ -1179,4 +1178,4 @@ calcWeeklyStatsN <- function(week, year, nWeek = 1) {
   }
   return (t)
 }
-  
+
