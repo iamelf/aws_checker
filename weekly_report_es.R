@@ -6,8 +6,6 @@ library(stringr)
 library(reshape2)
 library(openxlsx)
 
-options( java.parameters = "-Xmx6g" )
-
 weeknum <- function(dateStr=Sys.Date()) {
   
   t <- as.POSIXlt(dateStr)
@@ -21,29 +19,21 @@ driver <- JDBC("com.amazon.redshift.jdbc41.Driver", "RedshiftJDBC41-1.1.9.1009.j
 url <- "jdbc:redshift://a9dba-fin-rs2.db.amazon.com:8192/a9aws?user=maghuang&password=pw20160926NOW&tcpKeepAlive=true&ssl=true&sslfactory=org.postgresql.ssl.NonValidatingFactory"
 
 #AWS database
-#url <- "jdbc:postgresql://54.85.28.62:8192/datamart?user=maghuang&password=Youcan88$&tcpKeepAlive=true"
+url <- "jdbc:postgresql://54.85.28.62:8192/datamart?user=maghuang&password=Youcan88$&tcpKeepAlive=true"
 
 
 dataPath <- "/Users/maghuang/aws/weekly_report"
-reportTemplatePath <- file.path(dataPath, "Elasticsearch-metrics-report-template.xlsx")
-
-# Output files
-reportFile <- paste("Elasticsearch-metrics-week", weeknum() - 1, ".xlsx", sep = "")
-reportPath <<- file.path(dataPath, reportFile)
-
-metricsFilePath <- file.path(dataPath, "weekly_metrics.csv")
-creditsFilePath <- file.path(dataPath, "weekly_credits.csv")
-customerFilePath <- file.path(dataPath, "top_customers.csv")
-gainerFilePath <- file.path(dataPath, "gainer_loser.csv")
-newCustFilePath <- file.path(dataPath, "new_customers.csv")
-droppedCustFilePath <- file.path(dataPath, "dropped_customers.csv")
 
 # Input files
-priceFilePath <- file.path(dataPath, "_input_prices.csv")
-testAccountFilePath <- file.path(dataPath, "_input_test_accounts.csv")
-goalFile <- paste("_input_es_goal_", as.integer(format(Sys.Date(), "%Y")), ".csv", sep="")
-goalFilePath <- file.path(dataPath, goalFile)
-ec2countFilePath <- file.path(dataPath, "_input_ec2count.csv")
+inputPath <- file.path(dataPath, "_input")
+
+priceFilePath <- file.path(inputPath, "prices.csv")
+testAccountFilePath <- file.path(inputPath, "test_accounts.csv")
+goalFile <- paste("es_goal_", as.integer(format(Sys.Date(), "%Y")), ".csv", sep="")
+goalFilePath <- file.path(inputPath, goalFile)
+ec2countFilePath <- file.path(inputPath, "ec2count.csv")
+metricsFilePath <- file.path(inputPath, "weekly_metrics.csv")
+reportTemplatePath <- file.path(inputPath, "Elasticsearch-metrics-report-template.xlsx")
 
 weeklyCharge <- data.frame(week = character(), data = data.frame())
 
@@ -58,6 +48,21 @@ main <- function(week, year) {
   if (missing(year)) {
     year = as.integer(format(Sys.Date(), "%Y"))
   }
+  
+  
+  # Output files
+  outputPath <- file.path(dataPath, paste("week", week, sep=""))
+  if(!dir.exists(outputPath)) {
+    dir.create(outputPath)
+  }
+  
+  
+  creditsFilePath <<- file.path(outputPath, "weekly_credits.csv")
+  customerFilePath <<- file.path(outputPath, "top_customers.csv")
+  gainerFilePath <<- file.path(outputPath, "gainer_loser.csv")
+  newCustFilePath <<- file.path(outputPath, "new_customers.csv")
+  droppedCustFilePath <<- file.path(outputPath, "dropped_customers.csv")
+  
   # global variable to store customer list, so each function doesn't need to retrieve it everytime. 
   
   if(!exists("customerList")) {
@@ -72,7 +77,7 @@ main <- function(week, year) {
   reportFile <- paste("Elasticsearch-metrics-week", wk, ".xlsx", sep = "")
   
   #set path
-  reportPath <<- file.path(dataPath, reportFile)
+  reportPath <<- file.path(outputPath, reportFile)
   
   if(file.exists(reportPath)) {
     file.remove(reportPath)
@@ -119,9 +124,7 @@ main <- function(week, year) {
     eval(parse(text = cmd))
   }
   
-  
   return (0)
-  
   
 }
 
@@ -1240,8 +1243,8 @@ calcWeeklyStats <- function(week, year) {
     #t <- read.xlsx(reportFilePath, sheetName = worksheet)
     t <- read.csv(metricsFilePath)
     vnames <- t[ , 1]
-    t <- sapply(t[, -1], as.character)
-    t <- as.data.frame(t(t[, -1]))
+    t <- sapply(t[, -c(1)], as.character)
+    t <- as.data.frame(t(t))
     colnames(t) <- vnames
     t <- filter(t, week != "week")
     
