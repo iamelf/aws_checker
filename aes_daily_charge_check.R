@@ -12,6 +12,9 @@ url <- "jdbc:redshift://a9dba-fin-rs2.db.amazon.com:8192/a9aws?user=maghuang&pas
 #AWS database
 #url <- "jdbc:postgresql://54.85.28.62:8192/datamart?user=maghuang&password=Youcan88$&tcpKeepAlive=true"
 
+if(!exists("customerList")) {
+  customerList <- getCustomerData()
+}
 
 
 
@@ -50,7 +53,7 @@ getDailyChargeN <- function (n) {
   }
 }
 
-dailyGainer <- function (dateStr, customerList) {
+dailyGainer <- function (dateStr) {
   if (missing(dateStr)) {
     t<- Sys.Date()-1
   } else {
@@ -60,13 +63,8 @@ dailyGainer <- function (dateStr, customerList) {
       return()
     }
   }
-  if (missing(customerList)) {
-    message("Please pass in the customer info!")
-    return ()
-  }
   
   cust <- customerList[c("account_id", "company")]
-  rm(customerList)
   
   d1 <- format(t-1, "%Y-%m-%d")
   d2 <- format(t, "%Y-%m-%d")
@@ -99,7 +97,7 @@ dailyGainer <- function (dateStr, customerList) {
 }
 
 
-dailyUsageDiff <- function (dateStr, customerList) {
+dailyUsageDiff <- function (dateStr) {
   if (missing(dateStr)) {
     t<- Sys.Date()-1
   } else {
@@ -219,7 +217,7 @@ getWeeklyCharges <- function(week) {
   return(t)
 }
 
-getAccountCharge <- function (dateStr, customerList) {
+getAccountCharge <- function (dateStr) {
   if (missing(dateStr)) {
     t<- Sys.Date()-1
   } else {
@@ -230,10 +228,6 @@ getAccountCharge <- function (dateStr, customerList) {
     }
   }
   
-  if(missing(customerList)) {
-    message("Please pass in customer data!")
-    return()
-  }
   cust <- customerList[c("account_id", "company")]
   
   dateStr <- format(t, "%Y-%m-%d")
@@ -476,7 +470,7 @@ initializeES <- function () {
   
 }
 
-loadDaily2ES <- function(dateStr, nDay=1, customerList) {
+loadDaily2ES <- function(dateStr, nDay=1) {
   if (missing(dateStr)) {
     t <- Sys.Date()-1
   } else {
@@ -485,10 +479,6 @@ loadDaily2ES <- function(dateStr, nDay=1, customerList) {
       message("Wrong date string: ", dateStr)
       return ()
     }
-  }
-  if (missing(customerList)) {
-    message("Please passin customer data!")
-    return ()
   }
   
   initializeES()
@@ -540,7 +530,7 @@ loadDaily2ES <- function(dateStr, nDay=1, customerList) {
       message("Index ", indexName, " already exists. Skip loading.")
     } else {
       message("Loading index ", indexName, " into Elasticsearch...")
-      dt <- getAccountCharge(dateStr, customerList = cust)
+      dt <- getAccountCharge(dateStr)
       # create index with mapping
       body <- paste('{
         "settings" : {
@@ -566,7 +556,7 @@ loadDaily2ES <- function(dateStr, nDay=1, customerList) {
       message("Index ", indexName, " already exists. Skip loading.")
     } else {
       message("Loading index ", indexName, " into Elasticsearch...")
-      dt <- dailyGainer(dateStr, customerList = cust)
+      dt <- dailyGainer(dateStr)
       # create index with mapping
       body <- paste('{
                     "settings" : {
@@ -739,12 +729,7 @@ getWeeklyUsage <- function (week) {
 
 
 # get the top customer by revenue $ in the past 7 days by region
-topCustomerByRegion <- function (week, customerList) {
-  
-  if (missing(customerList)) {
-    message("Please pass in the customer data!")
-    return ();
-  }
+topCustomerByRegion <- function (week) {
   
   message("Generating top customer list by region...")
   
@@ -809,8 +794,6 @@ topCustomerByRegion <- function (week, customerList) {
   ag_e$begin_date <- NULL
   names(ag_e)[6] <- "service_contract"
   
-  rm(cust)
-  
   for (i in regionList) {
     message("Generating top customer list for region ", i)
     chrg_i <- ag_i[ag_i$region == i, ]
@@ -839,12 +822,7 @@ topCustomerByRegion <- function (week, customerList) {
   message("Top customer lists saved to ", zipname)
 }
 
-getCustomerCharge <- function(account_id, customerList) {
-  
-  if (missing(customerList)) {
-    message("Please pass in customer information")
-    return (-1)
-  }
+getCustomerCharge <- function(account_id) {
   
   payer <- customerList[customerList$account_id == account_id, ]$payer_account_id
   if (is.na(payer)) {
@@ -980,11 +958,8 @@ getSQLData <- function() {
   
 }
 
-getDomainDiff <- function(week, customerList) {
-  if (missing(customerList)) {
-    message("Please pass in customer data")
-    return ()
-  }
+getDomainDiff <- function(week) {
+  
   if (missing(week)) {
     week = weeknum() -1
   }
@@ -993,7 +968,7 @@ getDomainDiff <- function(week, customerList) {
   
   message("- Connected to DB.")
   
-  SQL <- paste("select DISTINCT year, week, account_id, usage_resource
+  SQL <- paste("select DISTINCT year, week, account_id, usage_resource, region
   from a9cs_metrics.es_weekly_metering
   where week in ('", week,"', '", week - 1, "') and year = '2016' and is_internal_flag = 'Y'", sep="")
   
@@ -1010,15 +985,17 @@ getDomainDiff <- function(week, customerList) {
   w1 <- t[t$week == week-1, ]
   w2 <- t[t$week == week, ]
   
-  w1 <- aggregate(w1$usage_resource, by=list(w1$account_id), FUN=length)
-  w2 <- aggregate(w2$usage_resource, by=list(w2$account_id), FUN=length)
+  w1 <- aggregate(w1$usage_resource, by=list(w1$account_id, w1$region), FUN=length)
+  w2 <- aggregate(w2$usage_resource, by=list(w2$account_id, w2$region), FUN=length)
   
   names(w1)[1] <- "account_id"
-  names(w1)[2] <- "d1"
+  names(w1)[2] <- "region"
+  names(w1)[3] <- "d1"
   names(w2)[1] <- "account_id"
-  names(w2)[2] <- "d2"
+  names(w2)[2] <- "region"
+  names(w2)[3] <- "d2"
   
-  w <- merge(w1, w2, by="account_id", all=TRUE)
+  w <- merge(w1, w2, by=c("account_id", "region"), all=TRUE)
   
   w[is.na(w)] <- 0
   w$diff <- w$d2 - w$d1
@@ -1026,16 +1003,13 @@ getDomainDiff <- function(week, customerList) {
   
   w <- merge(w, customerList[,c("account_id", "company")], by="account_id", all.x=TRUE)
   
-  w <- aggregate(cbind(diff, d1, d2) ~ company, data=w, sum)
+  w <- aggregate(cbind(diff, d1, d2) ~ company + region, data=w, sum)
   
   return (w)
 }
 
-getCustomerDiff <- function(week, customerList) {
-  if (missing(customerList)) {
-    message("Please pass in customer data")
-    return ()
-  }
+getCustomerDiff <- function(week) {
+  
   customerList <- within(customerList, payer_account_id <- ifelse(is.na(payer_account_id), account_id, payer_account_id))
   
   if (missing(week)) {
@@ -1191,6 +1165,16 @@ getDomainUsage <- function(week) {
 # 
 #   return (w)
   
+}
+
+clearDailyData <- function (dateStr) {
+  index_name <- paste("*", dateStr, sep = "")
+  index_delete(index_name)
+  
+  outputDir <- "/Users/maghuang/aws/daily"
+  fname <- paste("dailycharge_", dateStr, ".csv", sep="")
+  fpath <- file.path(outputDir, fname);
+  file.remove(fpath)
 }
 
 
