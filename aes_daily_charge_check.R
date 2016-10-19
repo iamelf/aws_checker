@@ -942,11 +942,8 @@ getSQLData <- function() {
   
   message("- Connected to DB.")
   
-  SQL <- "select computation_date, account_id, usage_type, usage_value, billed_amount
-          from a9cs_metrics.es_daily_charges
-          where account_id = '786458385660'
-          and computation_date >= '2016-07-01'
-          and computation_date < '2016-08-01'"
+  SQL <- "select * from a9cs_metrics.es_new_active_customers
+  order by year, month, week"
   
   message("- Running query: weekly usage data...")
   t <- dbGetQuery(conn, SQL)
@@ -1176,6 +1173,11 @@ clearDailyData <- function (dateStr) {
   fpath <- file.path(outputDir, fname);
   file.remove(fpath)
 }
+
+customerCountTrend <- function () {
+  
+}
+
 
 
 

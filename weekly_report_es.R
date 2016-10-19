@@ -5,6 +5,7 @@ library(elastic)
 library(stringr)
 library(reshape2)
 library(openxlsx)
+library(lubridate)
 
 weeknum <- function(dateStr=Sys.Date()) {
   
@@ -19,7 +20,7 @@ driver <- JDBC("com.amazon.redshift.jdbc41.Driver", "RedshiftJDBC41-1.1.9.1009.j
 url <- "jdbc:redshift://a9dba-fin-rs2.db.amazon.com:8192/a9aws?user=maghuang&password=pw20160926NOW&tcpKeepAlive=true&ssl=true&sslfactory=org.postgresql.ssl.NonValidatingFactory"
 
 #AWS database
-url <- "jdbc:postgresql://54.85.28.62:8192/datamart?user=maghuang&password=Youcan88$&tcpKeepAlive=true"
+#url <- "jdbc:postgresql://54.85.28.62:8192/datamart?user=maghuang&password=Youcan88$&tcpKeepAlive=true"
 
 
 dataPath <- "/Users/maghuang/aws/weekly_report"
@@ -62,6 +63,7 @@ main <- function(week, year) {
   gainerFilePath <<- file.path(outputPath, "gainer_loser.csv")
   newCustFilePath <<- file.path(outputPath, "new_customers.csv")
   droppedCustFilePath <<- file.path(outputPath, "dropped_customers.csv")
+  newMetricsFilePath <<- file.path(outputPath, "weekly_metrics.csv")
   
   # global variable to store customer list, so each function doesn't need to retrieve it everytime. 
   
@@ -85,48 +87,63 @@ main <- function(week, year) {
   
   file.copy(reportTemplatePath, reportPath)
   
-  wb <- loadWorkbook(reportPath)
+  # wb <- loadWorkbook(reportPath)
+  
+  # write date & week number into target report file
+  wdate <- as.Date(paste(year, week + 1, 1, sep="-"), "%Y-%U-%u")
+  last_day <- as.Date(wdate) - wday(as.Date(wdate))
+  t <- data.frame(week = week, last_day = as.character(last_day))
+  # writeData(wb, "weeknum", t)
+  # saveWorkbook(wb, reportPath, overwrite = TRUE)
   
   gainer <- calcGainer(week, year)
   # removeWorksheet(wb, "gainer_loser")
   # addWorksheet(wb, "gainer_loser")
-  writeData(wb, "gainer_loser", gainer)
+  # writeData(wb, "gainer_loser", gainer)
+  # saveWorkbook(wb, reportPath, overwrite = TRUE)
   
-  
-  top_customers <- calcTop100(week, year)
-  writeData(wb, "top_customers", top_customers)
+  top_customers <- calcTopCustomer(week, year)
+  # writeData(wb, "top_customers", top_customers)
+  # saveWorkbook(wb, reportPath, overwrite = TRUE)
 
   
   credits <- calcCredits(week, year)
-  writeData(wb, "credits", credits)
+  # writeData(wb, "credits", credits)
+  # saveWorkbook(wb, reportPath, overwrite = TRUE)
   
   new_cust <- calcNewCustomers(week, year)
-  removeWorksheet(wb, "new_customers")
-  addWorksheet(wb, "new_customers")
-  writeData(wb, "new_customers", new_cust)
+  # removeWorksheet(wb, "new_customers")
+  # addWorksheet(wb, "new_customers")
+  # writeData(wb, "new_customers", new_cust)
+  # saveWorkbook(wb, reportPath, overwrite = TRUE)
   
   dropped_cust <- calcDroppedCustomers(week, year)
-  removeWorksheet(wb, "dropped_customers")
-  addWorksheet(wb, "dropped_customers")
-  writeData(wb, "dropped_customers", dropped_cust)
-  saveWorkbook(wb, reportPath, overwrite = TRUE)
+  # removeWorksheet(wb, "dropped_customers")
+  # addWorksheet(wb, "dropped_customers")
+  # writeData(wb, "dropped_customers", dropped_cust)
+  # saveWorkbook(wb, reportPath, overwrite = TRUE)
   
   # Generate data for current week and history week back to week 20
   t <- calcWeeklyStatsN(week = week, year = year, nWeek = (week - 23))
-  writeData(wb, "weekly_metrics", t(t), rowNames = TRUE)
+  # writeData(wb, "weekly_metrics", t(t), rowNames = TRUE)
+  # 
+  # saveWorkbook(wb, reportPath, overwrite = TRUE)
   
-  saveWorkbook(wb, reportPath, overwrite = TRUE)
-  
-  #clean global variables.
-  vnames <- grep("chargeWeek|meterWeek", ls(), value = T)
-  for (i in vnames) {
-    cmd <- paste("rm (", i, ")", sep = "")
-    eval(parse(text = cmd))
-  }
+  message("*** Elasticsearch metric report for week ", week, " completed! ***")
   
   return (0)
   
 }
+
+clearEnv <- function()  {
+  #clean global variables.
+  vnames <- grep("chargeWeek|meterWeek", ls(envir = .GlobalEnv), value = T)
+  for (i in vnames) {
+    cmd <- paste("rm (", i, ")", sep = "")
+    eval(parse(text = cmd))
+  }
+}
+
 
 
 
@@ -285,7 +302,7 @@ getWeeklyCharges <- function(week, year) {
                  credit_id,
                  charge_item_desc
                  from a9cs_metrics.es_weekly_charges
-                 where year = '2016' AND week='", week,"'", sep="")
+                 where year = '", year, "' AND week='", week,"'", sep="")
     conn <- dbConnect(driver, url)
     
     message("- Running query: weekly charge data...")
@@ -664,15 +681,15 @@ countRevenue <- function(week, year) {
   top_external_customers <- merge(top_external_customers, customerList[,c("account_id", "company")], by = c("account_id"), all.x = TRUE)
   top_external_customers <- arrange(top_external_customers,desc(billed_amount))
   
-  x$top_external_customer_1 = top_external_customers$company[1]
+  x$top_external_customer_1 = top_external_customers$account_id[1]
   x$top_external_customer_1_revenue = top_external_customers$billed_amount[1]
-  x$top_external_customer_2 = top_external_customers$company[2]
+  x$top_external_customer_2 = top_external_customers$account_id[2]
   x$top_external_customer_2_revenue = top_external_customers$billed_amount[2]
-  x$top_external_customer_3 = top_external_customers$company[3]
+  x$top_external_customer_3 = top_external_customers$account_id[3]
   x$top_external_customer_3_revenue = top_external_customers$billed_amount[3]
-  x$top_external_customer_4 = top_external_customers$company[4]
+  x$top_external_customer_4 = top_external_customers$account_id[4]
   x$top_external_customer_4_revenue = top_external_customers$billed_amount[4]
-  x$top_external_customer_5 = top_external_customers$company[5]
+  x$top_external_customer_5 = top_external_customers$account_id[5]
   x$top_external_customer_5_revenue = top_external_customers$billed_amount[5]
   
   
@@ -866,7 +883,7 @@ countEC2 <- function(week, year) {
 }
 
 
-calcTop100 <- function(week, year) {
+calcTopCustomer <- function(week, year) {
 
   if (missing(week)) {
     week = weeknum() - 1
@@ -966,6 +983,18 @@ count4weekRevenue <- function(week, year) {
   
   chrg <- aggregate(cbind(charge_0, charge_1, charge_2, charge_3) ~ account_id + company, data = chrg, sum)
   
+  # Deal with the special case of datapipe, a large IT service provider, 
+  # They have multiple account in AWS, each account for one of their clients
+  # The following code is to add the client name into datapipe's account name.
+  dt <- grep("datapipe", chrg$company, ignore.case = TRUE)
+  for (i in dt) {
+    act_id <- chrg[i,]$account_id
+    sub_account <- filter(customerList, payer_account_id == act_id)
+    sub_account <- filter(sub_account, !grepl("datapipe", company, ignore.case = TRUE))
+    if (nrow(sub_account) > 0) {
+      chrg[i,]$company <- paste(chrg[i, ]$company, sub_account[1, ]$company, sep = " - ")
+    }
+  }
   
   return (chrg)
   
@@ -1033,7 +1062,7 @@ calcCredits <- function(week, year) {
   credits <- merge(charge, customerList, by=c("account_id"), all.x=TRUE)
   credits<- within(credits, account_id <- ifelse(!is.na(payer_account_id),payer_account_id,account_id))
   
-  credits <- aggregate(charge$billed_amount, by = list(credits$account_id, credits$charge_item_desc), FUN = sum)
+  credits <- aggregate(credits$billed_amount, by = list(credits$account_id, credits$charge_item_desc), FUN = sum)
   names(credits)[1] <- "account_id"
   names(credits)[2] <- "charge_item_desc"
   names(credits)[3] <- "billed_amount"
@@ -1055,7 +1084,7 @@ calcCredits <- function(week, year) {
   credits <- bind_rows(credits, sum_row)
   
   #write to weekly report
-  write.csv(credits, creditsFilePath)
+  write.csv(credits, creditsFilePath, row.names = FALSE)
   
   return (credits)
   
@@ -1273,6 +1302,7 @@ calcWeeklyStats <- function(week, year) {
   
   #write to weekly report
   write.csv(x=t(t), file=metricsFilePath)
+  write.csv(x=t(t), file=newMetricsFilePath)
   
   return (x)
   
@@ -1331,7 +1361,7 @@ calcDroppedCustomers <- function(week, year) {
   
   x <- transform(x, rank=rank(-billed_amount))
   x <- x[, c("rank", "account_id", "company","billed_amount", "min_request_day", "max_request_day")]
-  write.csv(x, droppedCustFilePath)
+  write.csv(x, droppedCustFilePath, row.names = FALSE)
   
   return (x)
   
@@ -1374,7 +1404,7 @@ calcNewCustomers <- function(week, year) {
   new_accounts <- new_accounts[, c("rank", "account_id", "company", "usage_resource", "sum_usage_value")]
   colnames(new_accounts)[4] <- "sum_domain_count"
   
-  write.csv(new_accounts, newCustFilePath)
+  write.csv(new_accounts, newCustFilePath, row.names = FALSE)
   
   return (new_accounts)
 }
