@@ -1,3 +1,8 @@
+# Some MacOS security feature prevent this library being loaded. The following line is a quick hack.
+# http://charlotte-ngs.github.io/2016/01/MacOsXrJavaProblem.html
+Sys.setenv(JAVA_HOME='/Library/Java/JavaVirtualMachines/jdk1.8.0_111.jdk/Contents/Home/jre')
+dyn.load('/Library/Java/JavaVirtualMachines/jdk1.8.0_111.jdk/Contents/Home/jre/lib/server/libjvm.dylib')
+
 library(RJDBC)
 library(dplyr)
 library(jsonlite)
@@ -28,13 +33,13 @@ dataPath <- "/Users/maghuang/aws/weekly_report"
 # Input files
 inputPath <- file.path(dataPath, "_input")
 
-priceFilePath <- file.path(inputPath, "prices.csv")
+priceFilePath <- file.path(inputPath, "cs_prices.csv")
 testAccountFilePath <- file.path(inputPath, "test_accounts.csv")
-goalFile <- paste("es_goal_", as.integer(format(Sys.Date(), "%Y")), ".csv", sep="")
+goalFile <- paste("cs_goal_", as.integer(format(Sys.Date(), "%Y")), ".csv", sep="")
 goalFilePath <- file.path(inputPath, goalFile)
-ec2countFilePath <- file.path(inputPath, "ec2count.csv")
-metricsFilePath <- file.path(inputPath, "weekly_metrics.csv")
-reportTemplatePath <- file.path(inputPath, "Elasticsearch-metrics-report-template.xlsx")
+ec2countFilePath <- file.path(inputPath, "cs_ec2count.csv")
+metricsFilePath <- file.path(inputPath, "cs_weekly_metrics.csv")
+#reportTemplatePath <- file.path(inputPath, "Elasticsearch-metrics-report-template.xlsx")
 
 weeklyCharge <- data.frame(week = character(), data = data.frame())
 
@@ -58,11 +63,12 @@ main <- function(week, year) {
   }
   
   
-  creditsFilePath <<- file.path(outputPath, "weekly_credits.csv")
-  customerFilePath <<- file.path(outputPath, "top_customers.csv")
-  gainerFilePath <<- file.path(outputPath, "gainer_loser.csv")
-  newCustFilePath <<- file.path(outputPath, "new_customers.csv")
-  droppedCustFilePath <<- file.path(outputPath, "dropped_customers.csv")
+  creditsFilePath <<- file.path(outputPath, "cs_weekly_credits.csv")
+  customerFilePath <<- file.path(outputPath, "cs_top_customers.csv")
+  gainerFilePath <<- file.path(outputPath, "cs_gainer_loser.csv")
+  newCustFilePath <<- file.path(outputPath, "cs_new_customers.csv")
+  droppedCustFilePath <<- file.path(outputPath, "cs_dropped_customers.csv")
+  newMetricsFilePath <<- file.path(outputPath, "cs_weekly_metrics.csv")
   
   # global variable to store customer list, so each function doesn't need to retrieve it everytime. 
   
@@ -75,66 +81,74 @@ main <- function(week, year) {
   }
   
   wk <- str_pad(week, 2, pad="0")
-  reportFile <- paste("Elasticsearch-metrics-week", wk, ".xlsx", sep = "")
+  # reportFile <- paste("CloudSearch-metrics-week", wk, ".xlsx", sep = "")
   
-  #set path
-  reportPath <<- file.path(outputPath, reportFile)
+  # set path
+  # reportPath <<- file.path(outputPath, reportFile)
   
-  if(file.exists(reportPath)) {
-    file.remove(reportPath)
-  }
+  # if(file.exists(reportPath)) {
+  #   file.remove(reportPath)
+  # }
   
-  file.copy(reportTemplatePath, reportPath)
+  #file.copy(reportTemplatePath, reportPath)
   
-  wb <- loadWorkbook(reportPath)
+  # wb <- loadWorkbook(reportPath)
   
   # write date & week number into target report file
   wdate <- as.Date(paste(year, week + 1, 1, sep="-"), "%Y-%U-%u")
   last_day <- as.Date(wdate) - wday(as.Date(wdate))
   t <- data.frame(week = week, last_day = as.character(last_day))
-  writeData(wb, "weeknum", t)
+  # writeData(wb, "weeknum", t)
+  # saveWorkbook(wb, reportPath, overwrite = TRUE)
   
   gainer <- calcGainer(week, year)
   # removeWorksheet(wb, "gainer_loser")
   # addWorksheet(wb, "gainer_loser")
-  writeData(wb, "gainer_loser", gainer)
+  # writeData(wb, "gainer_loser", gainer)
+  # saveWorkbook(wb, reportPath, overwrite = TRUE)
   
-  top_customers <- calcTop100(week, year)
-  writeData(wb, "top_customers", top_customers)
+  top_customers <- calcTopCustomer(week, year)
+  # writeData(wb, "top_customers", top_customers)
+  # saveWorkbook(wb, reportPath, overwrite = TRUE)
   
   
   credits <- calcCredits(week, year)
-  writeData(wb, "credits", credits)
+  # writeData(wb, "credits", credits)
+  # saveWorkbook(wb, reportPath, overwrite = TRUE)
   
   new_cust <- calcNewCustomers(week, year)
-  removeWorksheet(wb, "new_customers")
-  addWorksheet(wb, "new_customers")
-  writeData(wb, "new_customers", new_cust)
+  # removeWorksheet(wb, "new_customers")
+  # addWorksheet(wb, "new_customers")
+  # writeData(wb, "new_customers", new_cust)
+  # saveWorkbook(wb, reportPath, overwrite = TRUE)
   
   dropped_cust <- calcDroppedCustomers(week, year)
-  removeWorksheet(wb, "dropped_customers")
-  addWorksheet(wb, "dropped_customers")
-  writeData(wb, "dropped_customers", dropped_cust)
-  saveWorkbook(wb, reportPath, overwrite = TRUE)
+  # removeWorksheet(wb, "dropped_customers")
+  # addWorksheet(wb, "dropped_customers")
+  # writeData(wb, "dropped_customers", dropped_cust)
+  # saveWorkbook(wb, reportPath, overwrite = TRUE)
   
   # Generate data for current week and history week back to week 20
   t <- calcWeeklyStatsN(week = week, year = year, nWeek = (week - 23))
-  writeData(wb, "weekly_metrics", t(t), rowNames = TRUE)
-  
-  saveWorkbook(wb, reportPath, overwrite = TRUE)
+  # writeData(wb, "weekly_metrics", t(t), rowNames = TRUE)
+  # 
+  # saveWorkbook(wb, reportPath, overwrite = TRUE)
   
   message("*** Elasticsearch metric report for week ", week, " completed! ***")
   
+  return (0)
+  
+}
+
+clearEnv <- function()  {
   #clean global variables.
   vnames <- grep("chargeWeek|meterWeek", ls(envir = .GlobalEnv), value = T)
   for (i in vnames) {
     cmd <- paste("rm (", i, ")", sep = "")
     eval(parse(text = cmd))
   }
-  
-  return (0)
-  
 }
+
 
 
 
@@ -164,7 +178,7 @@ translateRegion <- function (alias) {
 }
 
 getQwikLabsAccounts <- function() {
-  x <- filter(customerList, grepl("qwikLABS|Cloud vLab", company))$account_id
+  x <- filter(customerList, grepl("qwikLABS|Cloud vLab", company, ignore.case = TRUE))$account_id
   return (x)
 }
 
@@ -192,9 +206,9 @@ getGoal <- function(week, year) {
   
   # Get the weekly customer goal
   
-  esGoal <- read.csv(goalFilePath)
-  esGoal <- esGoal[esGoal$week == week,]
-  return (esGoal)
+  csGoal <- read.csv(goalFilePath)
+  csGoal <- csGoal[csGoal$week == week,]
+  return (csGoal)
 }
 
 
@@ -236,11 +250,22 @@ getCustomerData <- function () {
     AND bb.account_field_id = 2 ) 
     left outer join account 
     ON ( account.account_id = aa.account_id ) WHERE  aa.account_id IN (SELECT DISTINCT account_id 
-    FROM   o_aws_subscriptions 
+    FROM   o_aws_subscriptions
     -- WHERE  offering_id IN ( '26555', '113438', '128046' )
     WHERE  offering_id IN ('607996', '607997', '615324', '615325', '729920' )
     AND ( end_date IS NULL 
-    OR end_date >= ( SYSDATE - 8 )));"
+    OR end_date >= ( SYSDATE - 9 )));"
+    
+    SQL <- "select aa.account_id as account_id,
+    payer_account_id,
+    company_name as company,
+    customer_clear_lower_email as email,
+    CASE WHEN internal= 'external' then 'N' else 'Y' END as is_internal_flag 
+    from public.account_dm aa join  (SELECT DISTINCT account_id
+    FROM   awsdw_ods.o_aws_subscriptions
+    WHERE  offering_id IN ( '26555', '113438', '128046' )
+    AND ( end_date IS NULL
+    OR end_date >= ( SYSDATE - 9 ) )) k on k.account_id = aa.account_id"
     
     message("- Running query: customer data...")
     t <- dbGetQuery(conn, SQL)
@@ -267,7 +292,7 @@ getWeeklyCharges <- function(week, year) {
   }
   message("- Getting weekly charge data for week ", week)
   
-  vname <- paste("chargeWeek", week, sep="")
+  vname <- paste("cs_chargeWeek", week, sep="")
   if (exists(vname)) {
     return (eval(as.symbol(vname)))
   }
@@ -278,7 +303,7 @@ getWeeklyCharges <- function(week, year) {
     dir.create(dataPath)
   }
   
-  fname <- paste("WeeklyCharge_wk", week, ".csv", sep="")
+  fname <- paste("cs_WeeklyCharge_wk", week, ".csv", sep="")
   fpath <- file.path(dataPath, fname);
   
   if (file.exists(fpath)) {
@@ -292,17 +317,17 @@ getWeeklyCharges <- function(week, year) {
                  region, 
                  credit_id,
                  charge_item_desc
-                 from a9cs_metrics.es_weekly_charges
-                 where year = '2016' AND week='", week,"'", sep="")
+                 from a9cs_metrics.weekly_charges
+                 where year = '", year, "' AND week='", week,"'", sep="")
     conn <- dbConnect(driver, url)
     
     message("- Running query: weekly charge data...")
     t <- dbGetQuery(conn, SQL)
     t$account_id <- str_pad(as.character(t$account_id), 12, pad="0")
-    t <- subset(t, !(account_id %in% testAccount$account_id))
     dbDisconnect(conn)
     write.csv(t, fpath)
   }
+  t <- subset(t, !(account_id %in% testAccount$account_id))
   
   assign(vname, t, envir = .GlobalEnv)
   message("Charge data for week ", week, " retrieved.")
@@ -320,7 +345,7 @@ getWeeklyMetering <- function(week, year) {
     year = as.integer(format(Sys.Date(), "%Y"))
   }
   
-  vname <- paste("meterWeek", week, sep="")
+  vname <- paste("cs_meterWeek", week, sep="")
   if (exists(vname)) {
     return (eval(as.symbol(vname)))
   }
@@ -333,18 +358,18 @@ getWeeklyMetering <- function(week, year) {
     dir.create(dataPath)
   }
   
-  fname <- paste("WeeklyMetering_wk", week, ".csv", sep="")
+  fname <- paste("cs_WeeklyMetering_wk", week, ".csv", sep="")
   fpath <- file.path(dataPath, fname);
   
   if (file.exists(fpath)) {
     t <- read.csv(fpath, sep=",")
     t$account_id <- str_pad(as.character(t$account_id), 12, pad="0")
   } else {
-    SQL <- paste("select account_id, sum(usage_value) as sum_usage_value, week, year, is_internal_flag, usage_resource, usage_type, region
-                 from a9cs_metrics.es_weekly_metering
+    SQL <- paste("select week, year, account_id, sum(usage_value) as sum_usage_value, is_internal_flag, 
+                 usage_resource, usage_type, region, operation
+                 from a9cs_metrics.weekly_metering
                  where year = '", year, "' and week = '", week,"' 
-                 and usage_type like '%ESInstance%'
-                 group by account_id, week, year, usage_resource, usage_type, is_internal_flag, region;", sep = "")
+                 group by account_id, week, year, usage_resource, usage_type, is_internal_flag, region, operation;", sep = "")
     conn <- dbConnect(driver, url)
     
     message("- Running query: weekly metering data for week ", week)
@@ -367,11 +392,12 @@ getWeeklyMetering <- function(week, year) {
 # there are 2 ways to get cusomer #, 
 # 1. unique account_id from weekly metering 
 # 2. unique account_id from weekly charge
-# These 2 dataset 
+# These 2 datasets  
 # - Suspended accounts are included inn metering data but not in charge data (534 accounts for wk 38)
 # - accounts that only had credits applied that week but doesn't have any domains, only appears in charge data (52 accounts for wk 38)
 # Currently we're using the account # from the weekly charge data
 
+# unit-test done, still discrepancy
 countCustomers <- function(week, year) {
   if (missing(week)) {
     week = weeknum() - 1
@@ -383,57 +409,77 @@ countCustomers <- function(week, year) {
   
   x <- data_frame(week = week)
   
+  # Get the weekly customer goal
+  csGoal <- getGoal(week, year)
+  x$paying_customer_goal <- csGoal$paying_customer_goal
+  
+  # 1. Get total customers list
+  # 2. Divide them into (internal, external)
+  # 3. For external customers, divide them into free-trial & paying customers
+  
+  weeklyCharge <- getWeeklyCharges(week, year)
+  weeklyCharge <- filter(weeklyCharge, !(account_id %in% testAccount$account_id))
+  weeklyCharge <- aggregate(billed_amount ~ account_id + is_internal_flag, data = weeklyCharge, sum)
+  weeklyCharge$billed_amount <- round(weeklyCharge$billed_amount, 2)
+  
+  weeklyCharge_external <- weeklyCharge[weeklyCharge$is_internal_flag == "N",]
+  
+  x$active_count <- length(unique(weeklyCharge_external$account_id))
+  
+  # Get free trial customer count
+  SQL <- paste("select week, year, account_id
+  from a9cs_metrics.FreeTrial
+  where is_internal_flag = 'N' and week in (", week, ", ", week - 1, ") and year = ", year, sep = "")
+  
+  message("Getting free-trial customer data for week ", week)
+  conn <- dbConnect(driver, url)
+  t <- dbGetQuery(conn, SQL)
+  free_trial_customer <- t[t$week == week, ]
+  free_customer_lastwk <- t[t$week == week - 1, ]
+  paying_customer <- filter(weeklyCharge_external, !(account_id %in% free_trial_customer$account_id))
+  
+  x$active_paying_count <- nrow(paying_customer)
+  x$free_trial_count <- nrow(free_trial_customer)
+  
+  # get total internal customer account
+  weeklyCharge_internal <- weeklyCharge[weeklyCharge$is_internal_flag == "Y",]
+  x$active_count_internal <- length(unique(weeklyCharge_internal$account_id))
+  
+  # Get zero revenue customer data
   conn <- dbConnect(driver, url)
   
-  # Get all free tier customer
-  SQL <- paste("select * from a9cs_metrics.es_freetier
-               where year = '", year,"'
-               and week in ('", week,"', '", week-1,"')
-               and is_internal_flag = 'N'", sep = "")
-  
-  message("Getting free tier customer data for week ", week - 1, ", ", week,".")
-  free_accounts <- dbGetQuery(conn, SQL)
-  free_accounts$account_id <- str_pad(as.character(free_accounts$account_id), 12, pad="0")
-  
-  free_accounts <- subset(free_accounts, !(account_id %in% testAccount$account_id))
-  free_accounts$week <- as.integer(free_accounts$week)
-  message("- Query succeed: free tier customer data for week ", week - 1, ", ", week," retrieved.")
-  
-  
   # Get all new active customer
-  SQL <- paste("select * from a9cs_metrics.es_new_active_customers
+  SQL <- paste("select * from a9cs_metrics.new_active_customers
                where year = '", year,"'
                and week = '", week,"'", sep = "")
   
-  message("- Connected to DB.")
   message("Getting new active customer data for week ", week)
   new_active_account <- dbGetQuery(conn, SQL)
   new_active_account$account_id <- str_pad(as.character(new_active_account$account_id), 12, pad="0")
-  new_active_account <- subset(new_active_account, !(account_id %in% testAccount$account_id))
+  new_active_account <- filter(new_active_account, !(account_id %in% testAccount$account_id))
   message("- Query succeed: new active customer data for week ", week, " retrieved.")
   
-  # Calculate the active customers, divided by free-tier and paying customers
-  ft_current <- free_accounts[free_accounts$week == week, ]
-  
+  # Calculate the active customers, divided by freetrial customers and paying customers
   new_active_account_external <- new_active_account[new_active_account$is_internal_flag == "N",]
   
-  new_free_active <- intersect(new_active_account_external$account_id, ft_current$account_id)
-  new_free_active <- setdiff(new_free_active, testAccount$account_id)
+  new_free_active <- intersect(new_active_account_external$account_id, free_trial_customer$account_id)
   x$new_free_active_count <- length(new_free_active)
   
-  new_paying_active <- setdiff(new_active_account_external$account_id, ft_current$account_id)
-  new_paying_active <- setdiff(new_paying_active, testAccount$account_id)
+  new_paying_active <- intersect(new_active_account_external$account_id, paying_customer$account_id)
   x$new_paying_active_count <- length(new_paying_active)
   
   x$new_active_count <- x$new_free_active_count + x$new_paying_active_count
+  if(x$new_active_count != nrow(new_active_account_external)) {
+    warning("********* Data discrepency: new active customers!! **************")
+  }
   
-  new_active_count_internal <- new_active_account[new_active_account$is_internal_flag == "Y",c("account_id")]
-  x$new_active_count_internal <- length(setdiff(new_active_count_internal, testAccount$account_id))
+  new_active_internal <- new_active_account[new_active_account$is_internal_flag == "Y", ]
+  x$new_active_count_internal <- length(unique(new_active_internal$account_id))
   
-  SQL <- paste("select * from a9cs_metrics.es_new_inactive_customers
+  
+  SQL <- paste("select * from a9cs_metrics.new_inactive_customers
                where year = '", year,"'
                and week = '", week,"'", sep = "")
-  
   
   message("Getting new inactive customer data for week ", week)
   new_inactive_account <- dbGetQuery(conn, SQL)
@@ -441,74 +487,35 @@ countCustomers <- function(week, year) {
   new_inactive_account <- subset(new_inactive_account, !(account_id %in% testAccount$account_id))
   message("- Query succeed: new inactive customer data for week ", week, " retrieved.")
   
-  # Calculate the inactive customers, divided by free-tier and paying customers
+  # Calculate the inactive customers, divided by free-trial and paying customers
   
+  # To calculate the inactive customer division, find out the customer breakdown for last week.
+  lastWeeklyCharge <- getWeeklyCharges(week-1, year)
+  lastWeeklyCharge <- filter(lastWeeklyCharge, !(account_id %in% testAccount$account_id))
+ 
+  lastWeeklyCharge_external <- lastWeeklyCharge[lastWeeklyCharge$is_internal_flag == "N",]
+  
+  last_paying_customer <- filter(lastWeeklyCharge_external, !(account_id %in% free_customer_lastwk$account_id))
   new_inactive_account_external <- new_inactive_account[new_inactive_account$is_internal_flag == "N", ]
-  ft_last <- free_accounts[free_accounts$week == week - 1, ]
-  new_free_inactive <- intersect(new_inactive_account_external$account_id, ft_last$account_id)
-  x$new_free_inactive_count <- length(new_free_inactive)
   
-  new_paying_inactive <- setdiff(new_inactive_account_external$account_id, new_free_inactive)
-  x$new_paying_inactive_count <- length(new_paying_inactive)
+  new_free_inactive <- intersect(new_inactive_account_external$account_id, free_customer_lastwk$account_id)
+  x$new_free_inactive_count <- length(unique(new_free_inactive))
+  
+  new_paying_inactive <- intersect(new_inactive_account_external$account_id, last_paying_customer$account_id)
+  x$new_paying_inactive_count <- length(unique(new_paying_inactive))
+  
   x$new_inactive_count <- x$new_free_inactive_count + x$new_paying_inactive_count
   
-  new_inactive_account_internal <- new_inactive_account[new_inactive_account$is_internal_flag == "Y", c("account_id")]
+  if(x$new_inactive_count != nrow(new_inactive_account_external)) {
+    warning("********* Data discrepency: new inactive customers!! **************")
+  }
   
-  x$new_inactive_count_internal <- length(setdiff(new_inactive_account_internal, testAccount$account_id))
+  new_inactive_internal <- new_inactive_account[new_inactive_account$is_internal_flag == "Y", ]
+  x$new_inactive_count_internal <- length(unique(new_inactive_internal$account_id))
   
   # Get converted to pay
-  SQL <- paste("select * from a9cs_metrics.es_free_to_pay
-               where year = '", year,"'
-               and week = '", week,"'", sep = "")
-  
-  message("Getting converted-to-paying customer data for week ", week)
-  convert_to_pay <- dbGetQuery(conn, SQL)
-  convert_to_pay$account_id <- str_pad(as.character(convert_to_pay$account_id), 12, pad="0")
-  convert_to_pay <- subset(convert_to_pay, !(account_id %in% testAccount$account_id))
-  message("- Query succeed: converted-to-paying customer data for week ", week, " retrieved.")
-  
-  # Get zero revenue customer data
-  SQL <- paste("select account_id, sum(billed_amount) from a9cs_metrics.es_weekly_charges
-               where year = '", year,"'
-               and week = '", week,"'
-               group by 1", sep = "")
-  
-  message("Getting zero revenue customer data for week ", week)
-  zero_rev <- dbGetQuery(conn, SQL)
-  zero_rev$account_id <- str_pad(as.character(zero_rev$account_id), 12, pad="0")
-  zero_rev <- subset(zero_rev, !(account_id %in% testAccount$account_id))
-  x$convert_to_paying_count <- length(unique(convert_to_pay$account_id))
-  message("- Query succeed: zero revenue customer data for week ", week, " retrieved.")
-  dbDisconnect(conn)
-  
-  zero_rev_FT <- merge(ft_current, zero_rev, by=c("account_id"), all.x=TRUE)
-  zero_rev_FT$sum <- round(zero_rev_FT$sum, 2)
-  zero_rev_FT <- zero_rev_FT[zero_rev_FT$sum == 0,]
-  zero_rev_FT <- zero_rev_FT[!is.na(zero_rev_FT$account_id),]
-  x$zero_revenue_free_count = nrow(zero_rev_FT)
-  
-  # get total external customer account
-  weeklyCharge <- getWeeklyCharges(week, year)
-  weeklyCharge_external <- weeklyCharge[weeklyCharge$is_internal_flag == "N",]
-  
-  active <- unique(weeklyCharge_external$account_id)
-  active <- setdiff(active, testAccount$account_id)
-  x$active_count <- length(active)
-  x$active_paying_count <- x$active_count - x$zero_revenue_free_count
-  
-  # get total internal customer account
-  
-  weeklyCharge_internal <- weeklyCharge[weeklyCharge$is_internal_flag == "Y",]
-  
-  active <- unique(weeklyCharge_internal$account_id)
-  active <- setdiff(active, testAccount$account_id)
-  x$active_count_internal <- length(active)
-  
-  # Get the weekly customer goal
-  esGoal <- getGoal(week, year)
-  x$paying_customer_goal <- esGoal$paying_customer_goal
-  x$active_customer_goal <- esGoal$active_customer_goal
-  
+  convert_to_paying <- intersect(free_customer_lastwk$account_id, paying_customer$account_id)
+  x$convert_to_paying_count <- length(unique(convert_to_paying))
   
   x$week <- NULL
   return (x)
@@ -524,6 +531,7 @@ countCustomers <- function(week, year) {
 # Currently, when counting customer with 1 or more domains,
 # we're using the account # from the weekly charge data, and exclude the "credit only" accounts, which has 0 domains
 
+# unit-test done, still discrepancy
 countDomains <- function(week, year) {
   
   if (missing(week)) {
@@ -536,22 +544,28 @@ countDomains <- function(week, year) {
   
   x <- data.frame(week = week)
   
-  meter <- getWeeklyMetering(week, year)[, c("account_id", "region", "usage_resource", "is_internal_flag")]
+  meter <- getWeeklyMetering(week, year)[, c("account_id", "region", "usage_resource", "usage_type", "operation", "is_internal_flag")]
   charge_account <- getWeeklyCharges(week, year)$account_id
   
   meter <- subset(meter, !(account_id %in% testAccount$account_id))
   meter <- subset(meter, account_id %in% charge_account)
   
-  dt_external <- subset(meter, is_internal_flag == "N")
-  dt_internal <- subset(meter, is_internal_flag == "Y")
+  meter <- filter(meter, grepl("SearchInstance", usage_type))
   
-  x$external_domain_count <- length(unique(dt_external$usage_resource))
-  x$internal_domain_count <- length(unique(dt_internal$usage_resource))
+  domain_external <- subset(meter, is_internal_flag == "N")
+  domain_internal <- subset(meter, is_internal_flag == "Y")
   
-  dt_external <- dt_external[!duplicated(dt_external$usage_resource), ]
-  ag_external <- aggregate(usage_resource ~ account_id, dt_external, length)
+  x$external_domain_count <- length(unique(domain_external$usage_resource))
+  x$internal_domain_count <- length(unique(domain_internal$usage_resource))
+  
+  domain_external <- domain_external[!duplicated(domain_external$usage_resource), ]
+  ag_external <- aggregate(usage_resource ~ account_id, domain_external, length)
   x$one_domain_customer_count <- nrow(ag_external[ag_external$usage_resource == 1, ])
   x$multi_domain_customer_count <- nrow(ag_external[ag_external$usage_resource > 1, ])
+  
+  # count customers using 2011 API and 2013 API
+  x$customer_2011_count <- length(unique(domain_external[domain_external$operation == "CSDomain:001",]$account_id))
+  x$customer_2013_count <- length(unique(domain_external[domain_external$operation == "CSDomain:002",]$account_id))
   
   x$week <- NULL
   return (x) 
@@ -613,9 +627,9 @@ countRevenue <- function(week, year) {
   x$revenue_internal <- sum(charge_internal$billed_amount)
   x$credit_amount <- sum(charge_external_credit$billed_amount)
   
-  esGoal <- getGoal(week, year)
+  csGoal <- getGoal(week, year)
   
-  x$revenue_goal = esGoal$revenue_goal
+  x$revenue_goal = csGoal$revenue_goal
   
   instance_usage <- filter(charge_external_gross, grepl("ESInstance", usage_type))
   transfer_usage <- filter(charge_external_gross, grepl("-Out", usage_type))
@@ -672,15 +686,15 @@ countRevenue <- function(week, year) {
   top_external_customers <- merge(top_external_customers, customerList[,c("account_id", "company")], by = c("account_id"), all.x = TRUE)
   top_external_customers <- arrange(top_external_customers,desc(billed_amount))
   
-  x$top_external_customer_1 = top_external_customers$company[1]
+  x$top_external_customer_1 = top_external_customers$account_id[1]
   x$top_external_customer_1_revenue = top_external_customers$billed_amount[1]
-  x$top_external_customer_2 = top_external_customers$company[2]
+  x$top_external_customer_2 = top_external_customers$account_id[2]
   x$top_external_customer_2_revenue = top_external_customers$billed_amount[2]
-  x$top_external_customer_3 = top_external_customers$company[3]
+  x$top_external_customer_3 = top_external_customers$account_id[3]
   x$top_external_customer_3_revenue = top_external_customers$billed_amount[3]
-  x$top_external_customer_4 = top_external_customers$company[4]
+  x$top_external_customer_4 = top_external_customers$account_id[4]
   x$top_external_customer_4_revenue = top_external_customers$billed_amount[4]
-  x$top_external_customer_5 = top_external_customers$company[5]
+  x$top_external_customer_5 = top_external_customers$account_id[5]
   x$top_external_customer_5_revenue = top_external_customers$billed_amount[5]
   
   
@@ -824,14 +838,14 @@ countEC2 <- function(week, year) {
       message("Can't locate ec2 count for week ", week, " in ec2count.csv")
       return (-1)
     }
-    return (x[, c("ec2_count","es_ec2_count")])
+    return (x[, c("ec2_count","cs_ec2_count")])
   }
   
   t <- read.csv(ec2countFilePath)
   x <- t[t$week == week, ]
   x <- x[x$year == year, ]
   if (nrow(x) > 0) {
-    return(x[, c("ec2_count","es_ec2_count")])
+    return(x[, c("ec2_count","cs_ec2_count")])
   }
   
   conn <- dbConnect(driver, url)
@@ -862,7 +876,7 @@ countEC2 <- function(week, year) {
   x <- data_frame(year = year,
                   week = week,
                   ec2_count = nrow(ec2_accounts),
-                  es_ec2_count = length(y))
+                  cs_ec2_count = length(y))
   
   m <- bind_rows(t, x)
   m <- m[order(m$year, m$week), ]
@@ -870,11 +884,11 @@ countEC2 <- function(week, year) {
   
   message("- Query succeed: ec2 dev count retrieved.")
   
-  return (x[, c("ec2_count","es_ec2_count")])
+  return (x[, c("ec2_count","cs_ec2_count")])
 }
 
 
-calcTop100 <- function(week, year) {
+calcTopCustomer <- function(week, year) {
   
   if (missing(week)) {
     week = weeknum() - 1
@@ -974,6 +988,20 @@ count4weekRevenue <- function(week, year) {
   
   chrg <- aggregate(cbind(charge_0, charge_1, charge_2, charge_3) ~ account_id + company, data = chrg, sum)
   
+  # Deal with the special case of datapipe, a large IT service provider, 
+  # They have multiple account in AWS, each account for one of their clients
+  # The following code is to add the client name into datapipe's account name.
+  chrg$company <- as.character(chrg$company)
+  
+  dt <- grep("datapipe", chrg$company, ignore.case = TRUE)
+  for (i in dt) {
+    act_id <- chrg[i,]$account_id
+    sub_account <- filter(customerList, payer_account_id == act_id)
+    sub_account <- filter(sub_account, !grepl("datapipe", company, ignore.case = TRUE))
+    if (nrow(sub_account) > 0) {
+      chrg[i,]$company <- paste(chrg[i, ]$company, sub_account[1, ]$company, sep = " - ")
+    }
+  }
   
   return (chrg)
   
@@ -1041,7 +1069,7 @@ calcCredits <- function(week, year) {
   credits <- merge(charge, customerList, by=c("account_id"), all.x=TRUE)
   credits<- within(credits, account_id <- ifelse(!is.na(payer_account_id),payer_account_id,account_id))
   
-  credits <- aggregate(charge$billed_amount, by = list(credits$account_id, credits$charge_item_desc), FUN = sum)
+  credits <- aggregate(credits$billed_amount, by = list(credits$account_id, credits$charge_item_desc), FUN = sum)
   names(credits)[1] <- "account_id"
   names(credits)[2] <- "charge_item_desc"
   names(credits)[3] <- "billed_amount"
@@ -1063,7 +1091,7 @@ calcCredits <- function(week, year) {
   credits <- bind_rows(credits, sum_row)
   
   #write to weekly report
-  write.csv(credits, creditsFilePath)
+  write.csv(credits, creditsFilePath, row.names = FALSE)
   
   return (credits)
   
@@ -1097,7 +1125,7 @@ countCost <- function(week, year) {
   
   
   SQL <- paste("select year, week, client_product_code, account_id, usage_type, usage_value, billed_amount 
-               from a9cs_metrics.es_cs_weekly_charges
+               from a9cs_metrics.cs_cs_weekly_charges
                where year = ", year, "
                and week = ", week, sep = "")
   
@@ -1281,6 +1309,7 @@ calcWeeklyStats <- function(week, year) {
   
   #write to weekly report
   write.csv(x=t(t), file=metricsFilePath)
+  write.csv(x=t(t), file=newMetricsFilePath)
   
   return (x)
   
@@ -1318,7 +1347,7 @@ calcDroppedCustomers <- function(week, year) {
   }
   
   SQL <- paste("select account_id, company, billed_amount, min_request_day, max_request_day
-               from a9cs_metrics.es_active_date 
+               from a9cs_metrics.cs_active_date 
                where max_request_year = ", year, 
                " and max_request_week = ", week, 
                " and is_internal_flag = 'N'", sep = "")
@@ -1339,7 +1368,7 @@ calcDroppedCustomers <- function(week, year) {
   
   x <- transform(x, rank=rank(-billed_amount))
   x <- x[, c("rank", "account_id", "company","billed_amount", "min_request_day", "max_request_day")]
-  write.csv(x, droppedCustFilePath)
+  write.csv(x, droppedCustFilePath, row.names = FALSE)
   
   return (x)
   
@@ -1355,7 +1384,7 @@ calcNewCustomers <- function(week, year) {
   }
   
   SQL <- paste("select account_id, company, min_request_day, max_request_day
-               from a9cs_metrics.es_active_date 
+               from a9cs_metrics.cs_active_date 
                where min_request_year = ", year, 
                " and min_request_week = ", week, 
                " and is_internal_flag = 'N'", sep = "")
@@ -1382,7 +1411,7 @@ calcNewCustomers <- function(week, year) {
   new_accounts <- new_accounts[, c("rank", "account_id", "company", "usage_resource", "sum_usage_value")]
   colnames(new_accounts)[4] <- "sum_domain_count"
   
-  write.csv(new_accounts, newCustFilePath)
+  write.csv(new_accounts, newCustFilePath, row.names = FALSE)
   
   return (new_accounts)
 }
