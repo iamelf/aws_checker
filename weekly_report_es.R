@@ -12,26 +12,58 @@ library(reshape2)
 library(openxlsx)
 library(lubridate)
 
-weeknum <- function(dateStr=Sys.Date()) {
+weeknum <- function(week, year, weekDiff) {
+  if (missing(week) || missing(year)) {
+    dateStr <- Sys.Date()
+  } else {
+    dateStr <- as.Date(paste("2", week, year, sep = "-"), format = "%w-%W-%Y")
+  }
+  if (missing(weekDiff)) {
+    weekDiff <- 0
+  }
   
-  t <- as.POSIXlt(dateStr)
-  t <- strftime(t,format="%W")
-  return (as.numeric(t))
+  x <- as.Date(dateStr) + weekDiff * 7
+
+  t <- as.POSIXlt(x)
+
+  week <- as.numeric(strftime(t,format="%W"))
+  year <- as.numeric(strftime(t,format="%Y"))
+  x <- data.frame(week = week,
+                  year = year)
+
+  return (x)
 }
 
+# weeknum <- function(dateStr, diff) {
+#   if (missing(dateStr)) {
+#     dateStr <- Sys.Date()
+#   }
+#   if (missing(diff)) {
+#     diff <- 0
+#   }
+#   
+#   t <- as.POSIXlt(dateStr)
+#   
+#   week <- as.numeric(strftime(t,format="%W"))
+#   
+#   
+#   return (week)
+# }
 
-#A9 cluster
-driver <- JDBC("com.amazon.redshift.jdbc41.Driver", "RedshiftJDBC41-1.1.9.1009.jar", identifier.quote="`")
-url <- "jdbc:redshift://a9dba-fin-rs2.db.amazon.com:8192/a9aws?user=maghuang&password=pw20160926NOW&tcpKeepAlive=true&ssl=true&sslfactory=org.postgresql.ssl.NonValidatingFactory"
+
+# !!! A9 cluster has been retired !!!
+#url <- "jdbc:redshift://a9dba-fin-rs2.db.amazon.com:8192/a9aws?user=maghuang&password=pw20160926NOW&tcpKeepAlive=true&ssl=true&sslfactory=org.postgresql.ssl.NonValidatingFactory"
+
 
 #AWS database
-#url <- "jdbc:postgresql://54.85.28.62:8192/datamart?user=maghuang&password=Youcan88$&tcpKeepAlive=true"
+driver <- JDBC("com.amazon.redshift.jdbc41.Driver", "RedshiftJDBC41-1.1.9.1009.jar", identifier.quote="`")
+url <- "jdbc:postgresql://54.85.28.62:8192/datamart?user=maghuang&password=Youcan88$&tcpKeepAlive=true"
 
 
-dataPath <- "/Users/maghuang/aws/weekly_report"
+rootPath <- "/Users/maghuang/aws/weekly_report"
 
 # Input files
-inputPath <- file.path(dataPath, "_input")
+inputPath <- file.path(rootPath, "_input")
 
 priceFilePath <- file.path(inputPath, "es_prices.csv")
 testAccountFilePath <- file.path(inputPath, "test_accounts.csv")
@@ -39,25 +71,26 @@ goalFile <- paste("es_goal_", as.integer(format(Sys.Date(), "%Y")), ".csv", sep=
 goalFilePath <- file.path(inputPath, goalFile)
 ec2countFilePath <- file.path(inputPath, "es_ec2count.csv")
 metricsFilePath <- file.path(inputPath, "es_weekly_metrics.csv")
-#reportTemplatePath <- file.path(inputPath, "Elasticsearch-metrics-report-template.xlsx")
-
-weeklyCharge <- data.frame(week = character(), data = data.frame())
-
-
+reportTemplatePath <- file.path(inputPath, "Elasticsearch-metrics-report-template.xlsx")
 
 main <- function(week, year) {
   
   if (missing(week)) {
-    week = weeknum() - 1
+    week = weeknum(weekDiff = -1)$week
   }
   
   if (missing(year)) {
-    year = as.integer(format(Sys.Date(), "%Y"))
+    year = weeknum(weekDiff = -1)$year
   }
   
   
   # Output files
-  outputPath <- file.path(dataPath, paste("week", week, sep=""))
+  outputPath <- file.path(rootPath, paste("week", week, sep=""))
+  if(!dir.exists(outputPath)) {
+    dir.create(outputPath)
+  }
+  
+  outputPath <- file.path(outputPath, "Elasticsearch")
   if(!dir.exists(outputPath)) {
     dir.create(outputPath)
   }
@@ -86,18 +119,18 @@ main <- function(week, year) {
   #set path
   reportPath <<- file.path(outputPath, reportFile)
   
-  if(file.exists(reportPath)) {
-    file.remove(reportPath)
-  }
+  # if(file.exists(reportPath)) {
+  #   file.remove(reportPath)
+  # }
   
   #file.copy(reportTemplatePath, reportPath)
   
   # wb <- loadWorkbook(reportPath)
   
   # write date & week number into target report file
-  wdate <- as.Date(paste(year, week + 1, 1, sep="-"), "%Y-%U-%u")
-  last_day <- as.Date(wdate) - wday(as.Date(wdate))
-  t <- data.frame(week = week, last_day = as.character(last_day))
+  # wdate <- as.Date(paste(weeknum()$year, weeknum()$week, 1, sep="-"), "%Y-%U-%u")
+  # last_day <- as.Date(wdate) - wday(as.Date(wdate))
+  # t <- data.frame(week = week, last_day = as.character(last_day))
   # writeData(wb, "weeknum", t)
   # saveWorkbook(wb, reportPath, overwrite = TRUE)
   
@@ -129,7 +162,8 @@ main <- function(week, year) {
   # saveWorkbook(wb, reportPath, overwrite = TRUE)
   
   # Generate data for current week and history week back to week 20
-  t <- calcWeeklyStatsN(week = week, year = year, nWeek = (week - 23))
+  nWeek <- (year - 2016) * 52 + (week - 23)
+  t <- calcWeeklyStatsN(week = week, year = year, nWeek = nWeek)
   # writeData(wb, "weekly_metrics", t(t), rowNames = TRUE)
   # 
   # saveWorkbook(wb, reportPath, overwrite = TRUE)
@@ -145,7 +179,24 @@ clearEnv <- function()  {
   vnames <- grep("chargeWeek|meterWeek", ls(envir = .GlobalEnv), value = T)
   for (i in vnames) {
     cmd <- paste("rm (", i, ")", sep = "")
-    eval(parse(text = cmd))
+    eval(parse(text = cmd), envir = .GlobalEnv)
+  }
+  
+  # Remove the buffer file for last week
+  dataPath <- file.path(rootPath, "data_buffer")
+  
+  fname <- paste("WeeklyCharge_wk", weeknum(weekDiff = -1)$week, ".csv", sep="")
+  fpath <- file.path(dataPath, fname);
+  
+  if(file.exists(fpath) & file.size(fpath) < 100000) {
+    file.remove(fpath)
+  }
+  
+  fname <- paste("WeeklyMetering_wk", weeknum(weekDiff = -1)$week, ".csv", sep="")
+  fpath <- file.path(dataPath, fname);
+  
+  if(file.exists(fpath) & file.size(fpath) < 100000) {
+    file.remove(fpath)
   }
 }
 
@@ -157,8 +208,8 @@ translateRegion <- function (alias) {
     message("Please pass in a region alias!")
     return (-1)
   }
-  regions <- data.frame(location = c("", "USW2","USW1", "EU", "APN1", "APS1", "APS2",	"SAE1", "EUC1", "APN2"),
-                        airport = c("IAD","PDX","SFO","DUB", "NRT", "SIN", "SYD", "GRU", "FRA", "ICN"))
+  regions <- data.frame(location = c("", "USW2","USW1", "EU", "APN1", "APS1", "APS2",	"APS3", "SAE1", "EUC1", "APN2", "USE2"),
+                        airport = c("IAD","PDX","SFO","DUB", "NRT", "SIN", "SYD", "BOM", "GRU", "FRA", "ICN", "CMH"))
   
   z <- NULL
   for (i in alias) {
@@ -177,6 +228,7 @@ translateRegion <- function (alias) {
   return (z)
 }
 
+# QwikLabs is excluded from the domain counts, but it's not excluded from the revenue. 
 getQwikLabsAccounts <- function() {
   x <- filter(customerList, grepl("qwikLABS|Cloud vLab", company, ignore.case = TRUE))$account_id
   return (x)
@@ -187,21 +239,21 @@ getTestAccounts <- function() {
   t <- read.csv(testAccountFilePath)
   t$account_id <- str_pad(as.character(t$account_id), 12, pad="0")
   
-  lab <- data.frame(account_id = getQwikLabsAccounts())
-  lab$Type <- "test"
-  
-  t <- bind_rows(t, lab)
+  # lab <- data.frame(account_id = getQwikLabsAccounts())
+  # lab$Type <- "test"
+  # 
+  # t <- bind_rows(t, lab)
   
   return (t)
 }
 
 getGoal <- function(week, year) {
   if (missing(week)) {
-    week = weeknum() - 1
+    week = weeknum(weekDiff = -1)$week
   }
   
   if (missing(year)) {
-    year = as.integer(format(Sys.Date(), "%Y"))
+    year = weeknum(weekDiff = -1)$year
   }
   
   # Get the weekly customer goal
@@ -214,13 +266,13 @@ getGoal <- function(week, year) {
 
 getCustomerData <- function () {
   
-  dataPath <- file.path(dataPath, "data_buffer")
+  dataPath <- file.path(rootPath, "data_buffer")
   
   if (!dir.exists(dataPath)) {
     dir.create(dataPath)
   }
   
-  fname <- paste("CustomerData-wk", weeknum(),".csv", sep="")
+  fname <- paste("CustomerData-wk", weeknum()$week,".csv", sep="")
   fpath <- file.path(dataPath, fname)
   
   if(file.exists(fpath)) {
@@ -232,41 +284,42 @@ getCustomerData <- function () {
     conn <- dbConnect(driver, url)
     message("- Connected to DB.")
     
-    SQL <- "WITH account 
-    AS (SELECT DISTINCT account_id, payer_account_id, is_internal_flag 
-    FROM   dim_aws_accounts 
-    WHERE  end_effective_date IS NULL
-    AND    current_record_flag = 'Y')   -- tt33060829 dupe stop
-    SELECT aa.account_id, 
-    coalesce(bb.account_field_value, 'e-mail Domain:' 
-    || aa.email_domain) AS company, 
-    aa.clear_name name, 
-    aa.clear_lower_email email, 
-    account.is_internal_flag,
-    account.payer_account_id
-    FROM   t_customers aa 
-    left outer join o_aws_account_field_values bb 
-    ON ( aa.account_id = bb.account_id 
-    AND bb.account_field_id = 2 ) 
-    left outer join account 
-    ON ( account.account_id = aa.account_id ) WHERE  aa.account_id IN (SELECT DISTINCT account_id 
-    FROM   o_aws_subscriptions
-    -- WHERE  offering_id IN ( '26555', '113438', '128046' )
-    WHERE  offering_id IN ('607996', '607997', '615324', '615325', '729920' )
-    AND ( end_date IS NULL 
-    OR end_date >= ( SYSDATE - 9 )));"
-    
-    SQL <- "select aa.account_id as account_id,
-    payer_account_id,
+    # SQL <- "WITH account
+    # AS (SELECT DISTINCT account_id, payer_account_id, is_internal_flag
+    # FROM   dim_aws_accounts
+    # WHERE  end_effective_date IS NULL
+    # AND    current_record_flag = 'Y')   -- tt33060829 dupe stop
+    # SELECT aa.account_id,
+    # coalesce(bb.account_field_value, 'e-mail Domain:'
+    # || aa.email_domain) AS company,
+    # aa.clear_name name,
+    # aa.clear_lower_email email,
+    # account.is_internal_flag,
+    # account.payer_account_id
+    # FROM   t_customers aa
+    # left outer join o_aws_account_field_values bb
+    # ON ( aa.account_id = bb.account_id
+    # AND bb.account_field_id = 2 )
+    # left outer join account
+    # ON ( account.account_id = aa.account_id ) WHERE  aa.account_id IN (SELECT DISTINCT account_id
+    # FROM   o_aws_subscriptions
+    # -- WHERE  offering_id IN ( '26555', '113438', '128046' )
+    # WHERE  offering_id IN ('607996', '607997', '615324', '615325', '729920' )
+    # AND ( end_date IS NULL
+    # OR end_date >= ( SYSDATE - 9 )));"
+
+    SQL <- "select aa.payer_account_id,
     company_name as company,
     customer_clear_lower_email as email,
-    CASE WHEN internal= 'external' then 'N' else 'Y' END as is_internal_flag 
-    from public.account_dm aa join  (SELECT DISTINCT account_id
-    FROM   awsdw_ods.o_aws_subscriptions
-    WHERE  offering_id IN ( '26555', '113438', '128046' )
-    AND ( end_date IS NULL
-    OR end_date >= ( SYSDATE - 9 ) )) k on k.account_id = aa.account_id"
-    
+    CASE WHEN internal= 'external' then 'N' else 'Y' END as is_internal_flag
+    from public.account_dm aa join (
+    select distinct
+    payer_account_id
+    from public.account_dm aa join  awsdw_ods.o_aws_subscriptions k on k.account_id = aa.account_id
+    and offering_id IN ('607996', '607997', '615324', '615325', '729920' )
+    and NVL(end_date,sysdate) >= ( SYSDATE - 9 ) ) p
+    on p.payer_account_id = aa.payer_account_id; "
+
     message("- Running query: customer data...")
     t <- dbGetQuery(conn, SQL)
     
@@ -284,11 +337,11 @@ getCustomerData <- function () {
 
 getWeeklyCharges <- function(week, year) {
   if (missing(week)) {
-    week = weeknum() - 1
+    week = weeknum(weekDiff = -1)$week
   }
   
   if (missing(year)) {
-    year = as.integer(format(Sys.Date(), "%Y"))
+    year = weeknum(weekDiff = -1)$year
   }
   message("- Getting weekly charge data for week ", week)
   
@@ -297,7 +350,7 @@ getWeeklyCharges <- function(week, year) {
     return (eval(as.symbol(vname)))
   }
   
-  dataPath <- file.path(dataPath, "data_buffer")
+  dataPath <- file.path(rootPath, "data_buffer")
   
   if (!dir.exists(dataPath)) {
     dir.create(dataPath)
@@ -338,11 +391,11 @@ getWeeklyCharges <- function(week, year) {
 getWeeklyMetering <- function(week, year) {
   
   if (missing(week)) {
-    week = weeknum() - 1
+    week = weeknum(weekDiff = -1)$week
   }
   
   if (missing(year)) {
-    year = as.integer(format(Sys.Date(), "%Y"))
+    year = weeknum(weekDiff = -1)$year
   }
   
   vname <- paste("meterWeek", week, sep="")
@@ -352,7 +405,7 @@ getWeeklyMetering <- function(week, year) {
   
   message("- Getting weekly metering data for week ", week)
   
-  dataPath <- file.path(dataPath, "data_buffer")
+  dataPath <- file.path(rootPath, "data_buffer")
   
   if (!dir.exists(dataPath)) {
     dir.create(dataPath)
@@ -399,11 +452,11 @@ getWeeklyMetering <- function(week, year) {
 
 countCustomers <- function(week, year) {
   if (missing(week)) {
-    week = weeknum() - 1
+    week = weeknum(weekDiff = -1)$week
   }
   
   if (missing(year)) {
-    year = as.integer(format(Sys.Date(), "%Y"))
+    year = weeknum(weekDiff = -1)$year
   }
   
   x <- data_frame(week = week)
@@ -419,6 +472,11 @@ countCustomers <- function(week, year) {
   
   weeklyCharge <- getWeeklyCharges(week, year)
   weeklyCharge <- filter(weeklyCharge, !(account_id %in% testAccount$account_id))
+  
+  # Exclude the acccounts fro QwikLabs
+  qwikLabsAccount <- getQwikLabsAccounts()
+  weeklyCharge <- filter(weeklyCharge, !(account_id %in% qwikLabsAccount))
+  
   weeklyCharge <- aggregate(billed_amount ~ account_id + is_internal_flag, data = weeklyCharge, sum)
   weeklyCharge$billed_amount <- round(weeklyCharge$billed_amount, 2)
   
@@ -449,6 +507,10 @@ countCustomers <- function(week, year) {
   new_active_account <- dbGetQuery(conn, SQL)
   new_active_account$account_id <- str_pad(as.character(new_active_account$account_id), 12, pad="0")
   new_active_account <- subset(new_active_account, !(account_id %in% testAccount$account_id))
+  
+  # Exclude the acccounts fro QwikLabs
+  new_active_account <- filter(new_active_account, !(account_id %in% qwikLabsAccount))
+  
   message("- Query succeed: new active customer data for week ", week, " retrieved.")
   
   
@@ -477,13 +539,22 @@ countCustomers <- function(week, year) {
   new_inactive_account <- dbGetQuery(conn, SQL)
   new_inactive_account$account_id <- str_pad(as.character(new_inactive_account$account_id), 12, pad="0")
   new_inactive_account <- subset(new_inactive_account, !(account_id %in% testAccount$account_id))
+  
+  # Exclude the acccounts fro QwikLabs
+  new_inactive_account <- filter(new_inactive_account, !(account_id %in% qwikLabsAccount))
+  
   message("- Query succeed: new inactive customer data for week ", week, " retrieved.")
   
   # Calculate the inactive customers, divided by 0-revenue and paying customers
   
   # To calculate the inactive customer division, find out the customer breakdown for last week.
-  lastWeeklyCharge <- getWeeklyCharges(week-1, year)
+  d <- weeknum(week = week, year = year, weekDiff = -1)
+  lastWeeklyCharge <- getWeeklyCharges(d$week, d$year)
   lastWeeklyCharge <- filter(lastWeeklyCharge, !(account_id %in% testAccount$account_id))
+  
+  # Exclude the acccounts fro QwikLabs
+  lastWeeklyCharge <- filter(lastWeeklyCharge, !(account_id %in% qwikLabsAccount))
+  
   lastWeeklyCharge <- aggregate(billed_amount ~ account_id + is_internal_flag, data = lastWeeklyCharge, sum)
   lastWeeklyCharge$billed_amount <- round(lastWeeklyCharge$billed_amount, 2)
   
@@ -533,11 +604,11 @@ countCustomers <- function(week, year) {
 countDomains <- function(week, year) {
   
   if (missing(week)) {
-    week = weeknum() - 1
+    week = weeknum(weekDiff = -1)$week
   }
   
   if (missing(year)) {
-    year = as.integer(format(Sys.Date(), "%Y"))
+    year = weeknum(weekDiff = -1)$year
   }
   
   x <- data.frame(week = week)
@@ -545,7 +616,9 @@ countDomains <- function(week, year) {
   meter <- getWeeklyMetering(week, year)[, c("account_id", "region", "usage_resource", "is_internal_flag")]
   charge_account <- getWeeklyCharges(week, year)$account_id
   
+  qwikLabsAccount <- getQwikLabsAccounts()
   meter <- subset(meter, !(account_id %in% testAccount$account_id))
+  meter <- subset(meter, !(account_id %in% qwikLabsAccount))
   meter <- subset(meter, account_id %in% charge_account)
   
   dt_external <- subset(meter, is_internal_flag == "N")
@@ -564,7 +637,15 @@ countDomains <- function(week, year) {
 }
 
 
-countInstanceUsage <- function(week = weeknum()-1, year = as.integer(format(Sys.Date(), "%Y"))) {
+countInstanceUsage <- function(week, year) {
+  if (missing(week)) {
+    week = weeknum(weekDiff = -1)$week
+  }
+  
+  if (missing(year)) {
+    year = weeknum(weekDiff = -1)$year
+  }
+  
   
   meter <- getWeeklyMetering(week, year)
   charge_account <- getWeeklyCharges(week, year)$account_id
@@ -595,11 +676,11 @@ countInstanceUsage <- function(week = weeknum()-1, year = as.integer(format(Sys.
 
 countRevenue <- function(week, year) {
   if (missing(week)) {
-    week = weeknum() - 1
+    week = weeknum(weekDiff = -1)$week
   }
   
   if (missing(year)) {
-    year = as.integer(format(Sys.Date(), "%Y"))
+    year = weeknum(weekDiff = -1)$year
   }
   
   charge_total <- getWeeklyCharges(week, year)
@@ -678,15 +759,15 @@ countRevenue <- function(week, year) {
   top_external_customers <- merge(top_external_customers, customerList[,c("account_id", "company")], by = c("account_id"), all.x = TRUE)
   top_external_customers <- arrange(top_external_customers,desc(billed_amount))
   
-  x$top_external_customer_1 = top_external_customers$account_id[1]
+  x$top_external_customer_1 = str_pad(as.character(top_external_customers$account_id[1]), 12, pad="0")
   x$top_external_customer_1_revenue = top_external_customers$billed_amount[1]
-  x$top_external_customer_2 = top_external_customers$account_id[2]
+  x$top_external_customer_2 = str_pad(as.character(top_external_customers$account_id[2]), 12, pad="0")
   x$top_external_customer_2_revenue = top_external_customers$billed_amount[2]
-  x$top_external_customer_3 = top_external_customers$account_id[3]
+  x$top_external_customer_3 = str_pad(as.character(top_external_customers$account_id[3]), 12, pad="0")
   x$top_external_customer_3_revenue = top_external_customers$billed_amount[3]
-  x$top_external_customer_4 = top_external_customers$account_id[4]
+  x$top_external_customer_4 = str_pad(as.character(top_external_customers$account_id[4]), 12, pad="0")
   x$top_external_customer_4_revenue = top_external_customers$billed_amount[4]
-  x$top_external_customer_5 = top_external_customers$account_id[5]
+  x$top_external_customer_5 = str_pad(as.character(top_external_customers$account_id[5]), 12, pad="0")
   x$top_external_customer_5_revenue = top_external_customers$billed_amount[5]
   
   
@@ -716,12 +797,13 @@ countRevenue <- function(week, year) {
 
 
 countRegionCustomer <- function(week, year) {
+  
   if (missing(week)) {
-    week = weeknum() - 1
+    week = weeknum(weekDiff = -1)$week
   }
   
   if (missing(year)) {
-    year = as.integer(format(Sys.Date(), "%Y"))
+    year = weeknum(weekDiff = -1)$year
   }
   
   meter <- getWeeklyMetering(week, year)
@@ -746,12 +828,13 @@ countRegionCustomer <- function(week, year) {
 }
 
 countRegionRevenue <- function(week, year) {
+  
   if (missing(week)) {
-    week = weeknum() - 1
+    week = weeknum(weekDiff = -1)$week
   }
   
   if (missing(year)) {
-    year = as.integer(format(Sys.Date(), "%Y"))
+    year = weeknum(weekDiff = -1)$year
   }
   
   charge <- getWeeklyCharges(week, year)
@@ -777,11 +860,11 @@ countRegionRevenue <- function(week, year) {
 countInstanceUsage <- function(week, year) {
   
   if (missing(week)) {
-    week = weeknum() - 1
+    week = weeknum(weekDiff = -1)$week
   }
   
   if (missing(year)) {
-    year = as.integer(format(Sys.Date(), "%Y"))
+    year = weeknum(weekDiff = -1)$year
   }
   
   meter <- getWeeklyMetering(week, year)
@@ -811,14 +894,14 @@ countInstanceUsage <- function(week, year) {
 
 countEC2 <- function(week, year) {
   if (missing(week)) {
-    week = weeknum() - 1
+    week = weeknum(weekDiff = -1)$week
   }
   
   if (missing(year)) {
-    year = as.integer(format(Sys.Date(), "%Y"))
+    year = weeknum(weekDiff = -1)$year
   }
   
-  if (week != weeknum() - 1) {
+  if (week != weeknum(weekDiff = -1)$week) {
     if (!file.exists(ec2countFilePath)) {
       message("Can't calculate historical ec2 account #. Please find historical ec2 account data ec2count.csv")
       return (-1)
@@ -872,7 +955,7 @@ countEC2 <- function(week, year) {
   
   m <- bind_rows(t, x)
   m <- m[order(m$year, m$week), ]
-  write.csv(m, ec2countFilePath)
+  write.csv(m, ec2countFilePath, row.names = FALSE, col.names = FALSE)
   
   message("- Query succeed: ec2 dev count retrieved.")
   
@@ -883,11 +966,11 @@ countEC2 <- function(week, year) {
 calcTopCustomer <- function(week, year) {
 
   if (missing(week)) {
-    week = weeknum() - 1
+    week = weeknum(weekDiff = -1)$week
   }
   
   if (missing(year)) {
-    year = as.integer(format(Sys.Date(), "%Y"))
+    year = weeknum(weekDiff = -1)$year
   }
   
   rev <- count4weekRevenue(week, year)
@@ -899,20 +982,21 @@ calcTopCustomer <- function(week, year) {
   
   
   colnames(rev)[which(names(rev) == "charge_0")] <- as.character(week)
-  colnames(rev)[which(names(rev) == "charge_1")] <- as.character(week-1)
-  colnames(rev)[which(names(rev) == "charge_2")] <- as.character(week-2)
-  colnames(rev)[which(names(rev) == "charge_3")] <- as.character(week-3)
+  d1 <- weeknum(week = week, year = year, weekDiff = -1)
+  colnames(rev)[which(names(rev) == "charge_1")] <- as.character(d1$week)
+  d2 <- weeknum(week = week, year = year, weekDiff = -2)
+  colnames(rev)[which(names(rev) == "charge_2")] <- as.character(d2$week)
+  d3 <- weeknum(week = week, year = year, weekDiff = -3)
+  colnames(rev)[which(names(rev) == "charge_3")] <- as.character(d3$week)
   
   rev <- rev[, c("rank_0",
                  "rank_1",
                  "account_id", 
                  "company", 
-                 as.character(week-3), 
-                 as.character(week-2), 
-                 as.character(week-1),
+                 as.character(d3$week), 
+                 as.character(d2$week), 
+                 as.character(d1$week),
                  as.character(week))]
-  
-  
   
   write.csv(rev, customerFilePath, row.names = FALSE)
   
@@ -921,30 +1005,33 @@ calcTopCustomer <- function(week, year) {
 
 count4weekRevenue <- function(week, year) {
   if (missing(week)) {
-    week = weeknum() - 1
+    week = weeknum(weekDiff = -1)$week
   }
   
   if (missing(year)) {
-    year = as.integer(format(Sys.Date(), "%Y"))
+    year = weeknum(weekDiff = -1)$year
   }
   
   x <- data_frame(week = week)
   
   cust <- customerList[c("account_id", "company", "payer_account_id")]
   
-  t1 <- getWeeklyCharges(week - 3)
+  d <- weeknum(week = week, year = year, weekDiff = -3)
+  t1 <- getWeeklyCharges(week = d$week, year = d$year)
   t1 <- t1[t1$is_internal_flag=="N",]
   t1 <- t1[!(t1$account_id %in% testAccount$account_id), ]
   t1 <- merge(t1, cust, by = c("account_id"), all.x = TRUE)
   t1 <- within(t1, account_id <- ifelse(!is.na(payer_account_id),payer_account_id,account_id))
   
-  t2 <- getWeeklyCharges(week - 2)
+  d <- weeknum(week = week, year = year, weekDiff = -2)
+  t2 <- getWeeklyCharges(week = d$week, year = d$year)
   t2 <- t2[t2$is_internal_flag=="N",]
   t2 <- t2[!(t2$account_id %in% testAccount$account_id), ]
   t2 <- merge(t2, cust, by = c("account_id"), all.x = TRUE)
   t2 <- within(t2, account_id <- ifelse(!is.na(payer_account_id),payer_account_id,account_id))
   
-  t3 <- getWeeklyCharges(week - 1)
+  d <- weeknum(week = week, year = year, weekDiff = -1)
+  t3 <- getWeeklyCharges(week = d$week, year = d$year)
   t3 <- t3[t3$is_internal_flag=="N",]
   t3 <- t3[!(t3$account_id %in% testAccount$account_id), ]
   t3 <- merge(t3, cust, by = c("account_id"), all.x = TRUE)
@@ -1001,11 +1088,11 @@ count4weekRevenue <- function(week, year) {
 
 calcGainer <- function(week, year) {
   if (missing(week)) {
-    week = weeknum() - 1
+    week = weeknum(weekDiff = -1)$week
   }
   
   if (missing(year)) {
-    year = as.integer(format(Sys.Date(), "%Y"))
+    year = weeknum(weekDiff = -1)$year
   }
   
   
@@ -1044,11 +1131,11 @@ calcGainer <- function(week, year) {
 
 calcCredits <- function(week, year) {
   if (missing(week)) {
-    week = weeknum() - 1
+    week = weeknum(weekDiff = -1)$week
   }
   
   if (missing(year)) {
-    year = as.integer(format(Sys.Date(), "%Y"))
+    year = weeknum(weekDiff = -1)$year
   }
   
   x <- data_frame(week = week)
@@ -1094,11 +1181,11 @@ calcCredits <- function(week, year) {
 
 countCost <- function(week, year) {
   if (missing(week)) {
-    week = weeknum() - 1
+    week = weeknum(weekDiff = -1)$week
   }
   
   if (missing(year)) {
-    year = as.integer(format(Sys.Date(), "%Y"))
+    year = weeknum(weekDiff = -1)$year
   }
   
   #Get price
@@ -1258,11 +1345,11 @@ countCost <- function(week, year) {
 calcWeeklyStats <- function(week, year) {
   
   if (missing(week)) {
-    week = weeknum() - 1
+    week = weeknum(weekDiff = -1)$week
   }
   
   if (missing(year)) {
-    year = as.integer(format(Sys.Date(), "%Y"))
+    year = weeknum(weekDiff = -1)$year
   }
   #worksheet <- "weekly_metrics.csv"
   
@@ -1311,16 +1398,18 @@ calcWeeklyStats <- function(week, year) {
 calcWeeklyStatsN <- function(week, year, nWeek = 1) {
   
   if (missing(week)) {
-    week = weeknum() - 1
+    week = weeknum(weekDiff = -1)$week
   }
   
   if (missing(year)) {
-    year = as.integer(format(Sys.Date(), "%Y"))
+    year = weeknum(weekDiff = -1)$year
   }
   
   t <- data.frame()
+  
   for (i in 0:(nWeek - 1)) {
-    x <- calcWeeklyStats(week = (week - i), year = year)
+    d <- weeknum(week = week, year = year, weekDiff = -i)
+    x <- calcWeeklyStats(week = d$week, year = d$year)
     
     t <- bind_rows(t, x)
     t <- t[order(t$year, t$week), ]
@@ -1331,11 +1420,11 @@ calcWeeklyStatsN <- function(week, year, nWeek = 1) {
 
 calcDroppedCustomers <- function(week, year) {
   if (missing(week)) {
-    week = weeknum() - 1
+    week = weeknum(weekDiff = -1)$week
   }
   
   if (missing(year)) {
-    year = as.integer(format(Sys.Date(), "%Y"))
+    year = weeknum(weekDiff = -1)$year
   }
 
   SQL <- paste("select account_id, company, billed_amount, min_request_day, max_request_day
@@ -1368,11 +1457,11 @@ calcDroppedCustomers <- function(week, year) {
 
 calcNewCustomers <- function(week, year) {
   if (missing(week)) {
-    week = weeknum() - 1
+    week = weeknum(weekDiff = -1)$week
   }
   
   if (missing(year)) {
-    year = as.integer(format(Sys.Date(), "%Y"))
+    year = weeknum(weekDiff = -1)$year
   }
   
   SQL <- paste("select account_id, company, min_request_day, max_request_day
@@ -1415,16 +1504,15 @@ topCustomerByRegion <- function (week, year) {
   message("Generating top customer list by region...")
   
   if (missing(week)) {
-    week = weeknum() - 1
+    week = weeknum(weekDiff = -1)$week
   }
-  week <- as.character(week)
   
   if (missing(year)) {
-    year = as.integer(format(Sys.Date(), "%Y"))
+    year = weeknum(weekDiff = -1)$year
   }
   
   # Output files
-  outputPath <- file.path(dataPath, paste("week", week, sep=""))
+  outputPath <- file.path(rootPath, paste("week", week, sep=""))
   if(!dir.exists(outputPath)) {
     dir.create(outputPath)
   }
@@ -1439,6 +1527,8 @@ topCustomerByRegion <- function (week, year) {
   if (!dir.exists(outputDir)) {
     dir.create(outputDir)
   }
+  zipFile <- paste("topRegionCustomer-week", week, ".zip", sep = "")
+  zipPath <- file.path(outputPath, zipFile)
   
   chrg <- getWeeklyCharges(week, year)
   regionList <- na.omit(unique(chrg$region))
@@ -1447,7 +1537,8 @@ topCustomerByRegion <- function (week, year) {
   chrg_e <- chrg[chrg$is_internal_flag=="N", ]
   rm(chrg)
   
-  usage <- getWeeklyUsage(week)
+  usage <- getWeeklyMetering(week, year)
+  usage <- unique(usage[,c("is_internal_flag", "account_id","usage_resource", "region")])
   
   usage_i <- usage[usage$is_internal_flag=="Y", c("account_id","usage_resource", "region")]
   usage_i$account_id <- str_pad(as.character(usage_i$account_id), 12, pad="0")
@@ -1493,7 +1584,7 @@ topCustomerByRegion <- function (week, year) {
     
     fname <- paste("TopCustomer-internal-wk", week,"-",i,".csv", sep="")
     fpath <- file.path(outputDir, fname);
-    write.csv(t, fpath)
+    write.csv(t, fpath, row.names = F)
     
     chrg_e <- ag_e[ag_e$region == i, ]
     regionUsage  <- usage_e[usage_e$region == i, c("account_id", "usage_resource")]
@@ -1503,10 +1594,138 @@ topCustomerByRegion <- function (week, year) {
     
     fname <- paste("TopCustomer-external-wk", week,"-",i,".csv", sep="")
     fpath <- file.path(outputDir, fname);
-    write.csv(t, fpath)
+    write.csv(t, fpath, row.names = F)
   }
-  zipname <- paste(outputDir, ".zip", sep="")
-  zip(zipname, outputDir)
   
-  message("Top customer lists saved to ", zipname)
+  zip(zipPath, outputDir)
+  
+  message("Top customer lists saved to ", zipPath)
+}
+
+allCustomerList <- function(week, year) {
+  message("Generating list...")
+  
+  if (missing(week)) {
+    week = weeknum(weekDiff = -1)$week
+  }
+  
+  if (missing(year)) {
+    year = weeknum(weekDiff = -1)$year
+  }
+  
+  chargeDt <- getWeeklyCharges(week, year)
+  chargeDt <- aggregate(billed_amount ~ account_id, data = chargeDt, sum)
+  
+  chargeDt <- merge(chargeDt, customerList, by = c("account_id"), all.x = TRUE)
+  chargeDt <- chargeDt[, c("account_id", "is_internal_flag", "company", "billed_amount", "payer_account_id")]
+  chargeDt <- chargeDt[order(-chargeDt$billed_amount),]
+  
+  outputPath <- file.path(rootPath, paste("week", week, sep=""))
+  if(!dir.exists(outputPath)) {
+    dir.create(outputPath)
+  }
+  
+  wk <- str_pad(week, 2, pad="0")
+  outputFile <- paste("customerList-wk", wk, ".csv", sep = "")
+  outputDir <- file.path(outputPath, outputFile)
+  
+  write.csv(chargeDt, outputDir)
+
+  
+}
+
+calcRefund <- function(week, year) {
+  if (missing(week)) {
+    week = weeknum(weekDiff = -1)$week
+  }
+  
+  if (missing(year)) {
+    year = weeknum(weekDiff = -1)$year
+  }
+  
+  SQL <- paste("SELECT fct.computation_date,
+               case WHEN charge_item_desc  LIKE 'AWS Activate%' or charge_item_desc  LIKE 'AWS Activae%'
+               THEN  'AWS Activate'
+               WHEN charge_item_desc  LIKE 'BDE_RET%'
+               THEN 'RE:Think'
+               WHEN charge_item_desc  LIKE '%re:Invent%'
+               THEN 'RE:Invent'
+               WHEN charge_item_desc  LIKE '%AWS Enterprise Program Discount%' or charge_item_desc  LIKE '%AWS Enterprise Discount Program%'
+               THEN 'EDP'
+               WHEN charge_item_desc  LIKE 'Free Tier%'
+               THEN 'Free Tier'           
+               WHEN charge_item_desc  LIKE '%Promo%'
+               THEN 'Promotion'
+               WHEN charge_item_desc  LIKE '%Reseller Program%'
+               THEN 'Reseller Program'
+               WHEN charge_item_desc  LIKE 'RI %'
+               THEN 'RI Mismatch/Cancellation'
+               WHEN charge_item_desc  LIKE 'Private Pricing%'
+               THEN 'Private Deal'
+               when fct.billed_amount*amortization_factor <0 then 'credit'
+               when fct.refund_amount*amortization_factor <0 then 'refund'  end  as description,
+               fct.base_currency_code,
+               SUM(fct.billed_amount*amortization_factor) as credits,
+               SUM(fct.refund_amount*amortization_factor) as refunds
+               FROM
+               awsdw_dm_billing.fact_aws_daily_est_revenue_reporting fct
+               JOIN awsdw_dm_billing.dim_aws_products prd ON prd.product_seq_id = fct.product_seq_id 
+               WHERE
+               fct.computation_date = '2016-11-01'
+               --AND fct.revenue_type_id IN (112, 117) -- Anniversary and OCB Tax
+               --AND credit_id IS NOT NULL -- Credits
+               AND prd.product_code = 'AmazonES'
+               
+               GROUP BY
+               fct.computation_date
+               , case WHEN charge_item_desc  LIKE 'AWS Activate%' or charge_item_desc  LIKE 'AWS Activae%'
+               THEN  'AWS Activate'
+               WHEN charge_item_desc  LIKE 'BDE_RET%'
+               THEN 'RE:Think'
+               WHEN charge_item_desc  LIKE '%re:Invent%'
+               THEN 'RE:Invent'
+               WHEN charge_item_desc  LIKE '%AWS Enterprise Program Discount%' or charge_item_desc  LIKE '%AWS Enterprise Discount Program%'
+               THEN 'EDP'
+               WHEN charge_item_desc  LIKE 'Free Tier%'
+               THEN 'Free Tier'           
+               WHEN charge_item_desc  LIKE '%Promo%'
+               THEN 'Promotion'
+               WHEN charge_item_desc  LIKE '%Reseller Program%'
+               THEN 'Reseller Program'
+               WHEN charge_item_desc  LIKE 'RI %'
+               THEN 'RI Mismatch/Cancellation'
+               WHEN charge_item_desc  LIKE 'Private Pricing%'
+               THEN 'Private Deal'
+               when fct.billed_amount*amortization_factor <0 then 'credit'
+               when fct.refund_amount*amortization_factor <0 then 'refund'
+               end
+               ,fct.base_currency_code
+               having  SUM(fct.billed_amount*amortization_factor) <0 or SUM(fct.refund_amount*amortization_factor) <0")
+  
+  conn <- dbConnect(driver, url)
+  message("- Running query: getting refund and credit data for week ", week)
+  new_accounts <- dbGetQuery(conn, SQL)
+  dbDisconnect(conn)
+  new_accounts$account_id <- str_pad(as.character(new_accounts$account_id), 12, pad="0")
+  new_accounts <- subset(new_accounts, !(account_id %in% testAccount$account_id))
+  
+  meters <- getWeeklyMetering(week, year)
+  meters <- subset(meters, (account_id %in% new_accounts$account_id))
+  meters <- filter(meters, grepl("ESInstance", usage_type))
+  domain_cnt <- aggregate(usage_resource ~ account_id, meters, function(x) length(unique(x)))
+  
+  usage_cnt <- aggregate(sum_usage_value ~ account_id, meters, sum)
+  
+  new_accounts <- merge(new_accounts, domain_cnt, by = c("account_id"))
+  new_accounts <- merge(new_accounts, usage_cnt, by = c("account_id"))
+  
+  new_accounts <- new_accounts[order(-new_accounts$sum_usage_value),]
+  new_accounts <- transform(new_accounts, rank=rank(-sum_usage_value))
+  
+  new_accounts <- new_accounts[, c("rank", "account_id", "company", "usage_resource", "sum_usage_value")]
+  colnames(new_accounts)[4] <- "sum_domain_count"
+  
+  write.csv(new_accounts, newCustFilePath, row.names = FALSE)
+  
+  return (new_accounts)
 }

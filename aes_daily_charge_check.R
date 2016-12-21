@@ -8,11 +8,11 @@ library(elastic)
 library(stringr)
 
 
-#A9 cluster
-driver <- JDBC("com.amazon.redshift.jdbc41.Driver", "RedshiftJDBC41-1.1.9.1009.jar", identifier.quote="`")
+# !!! A9 cluster has been retired !!!
 #url <- "jdbc:redshift://a9dba-fin-rs2.db.amazon.com:8192/a9aws?user=maghuang&password=pw20160926NOW&tcpKeepAlive=true&ssl=true&sslfactory=org.postgresql.ssl.NonValidatingFactory"
 
 #AWS database
+driver <- JDBC("com.amazon.redshift.jdbc41.Driver", "RedshiftJDBC41-1.1.9.1009.jar", identifier.quote="`")
 url <- "jdbc:postgresql://54.85.28.62:8192/datamart?user=maghuang&password=Youcan88$&tcpKeepAlive=true"
 
 
@@ -458,6 +458,7 @@ initializeES <- function () {
   #esPort <- 443
   
   esBase <- "http://10.49.45.188"
+  esBase <- "http://127.0.0.1"
   #esBase <- "http://admin:awsrocks@10.49.32.92"
   esPort <- 9200
   
@@ -840,16 +841,8 @@ getCustomerCharge <- function(account_id) {
   
   message("- Connected to DB.")
   
-  SQL <- paste("select computation_date, 
-            client_product_code, 
-            account_id, 
-            usage_type, 
-            usage_value, 
-            billed_amount, 
-            operation, 
-            price_per_unit,
-            region from es_daily_charges
-            where computation_date >= '2016-01-01' 
+  SQL <- paste("select * from es_daily_charges
+            where computation_date >= '2016-12-01' 
               and account_id in (", queryStr,")", sep = "")
   
   message("- Running query: weekly usage data...")
@@ -859,6 +852,83 @@ getCustomerCharge <- function(account_id) {
   dbDisconnect(conn)
   
  return(t)
+}
+
+getCustomerUsage <- function(account_id, type) {
+  
+  if(missing(type)) {
+    type = "ES"
+  } else {
+    type = "CS"
+  }
+  payer <- customerList[customerList$account_id == account_id, ]$payer_account_id
+  if (is.na(payer)) {
+    payer <- account_id
+  }
+  
+  
+  all_accounts <- filter(customerList, payer_account_id == payer)$account_id
+  
+  
+  
+  queryStr <- paste("'", all_accounts[1], "'", sep = "")
+  for (i in all_accounts) {
+    queryStr<- paste(queryStr, ", '", i, "'", sep = "")
+  }
+  
+  
+  conn <- dbConnect(driver, url)
+  
+  message("- Connected to DB.")
+  #Elasticsearch usage
+  
+  if(type == "ES") {
+    SQL <- paste("select computation_date, 
+               client_product_code, 
+                 account_id, 
+                 usage_type, 
+                 usage_value, 
+                 billed_amount, 
+                 operation, 
+                 price_per_unit,
+                 region from a9cs_metrics.es_daily_charges
+                 where computation_date >= '2016-01-01' 
+                 and account_id in (", queryStr,")", sep = "")
+  } else {
+    #Cloudsearch usage
+    SQL <- paste("select computation_date, 
+                 client_product_code, 
+                 account_id, 
+                 usage_type, 
+                 usage_value, 
+                 billed_amount, 
+                 operation, 
+                 price_per_unit,
+                 region from a9cs_metrics.daily_charges
+                 where computation_date >= '2016-01-01' 
+                 and account_id in (", queryStr,")", sep = "")
+    
+    SQL <- paste("select request_day, 
+                 client_product_code, 
+                 account_id, 
+                 usage_type, 
+                 usage_value,
+                 usage_resource,
+                 operation
+                 from a9cs_metrics.daily_metering
+                 where request_day >= '2016-01-01' 
+                 and account_id in (", queryStr,")", sep = "")
+  }
+  
+  
+  
+  message("- Running query: weekly usage data...")
+  t <- dbGetQuery(conn, SQL)
+  t$account_id <- str_pad(as.character(t$account_id), 12, pad="0")
+  message("- Query succeed: weekly usage data retrieved.")
+  dbDisconnect(conn)
+  
+  return(t)
 }
 
 getPricePlan <- function(id) {
@@ -939,7 +1009,19 @@ getSQLData <- function() {
   
   message("- Connected to DB.")
   
-  SQL <- "select * from a9cs_metrics.es_new_inactive_customers"
+  SQL <- paste("select account_id,
+                 is_internal_flag,
+               billed_amount,
+               usage_type,
+               usage_value,
+               price_per_unit,
+               region,
+               credit_id,
+               charge_item_desc
+               from a9cs_metrics.es_daily_charges
+               where is_internal_flag = 'N'
+               and usage_type like '%t2.micro%'
+               and computation_date like '%2016-11%'", sep="")
   
   message("- Running query: weekly usage data...")
   t <- dbGetQuery(conn, SQL)
@@ -1175,7 +1257,15 @@ customerCountTrend <- function () {
 }
 
 
-
+workloadType <- function() {
+  # get metering data of a specific day
+  
+  x <- merge(x, customerList[, c("account_id", "is_internal_flag")], by = c("account_id"), all.x=T)
+  
+  # find out all the domain names
+  
+  
+}
 
 
 
