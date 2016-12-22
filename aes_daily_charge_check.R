@@ -6,6 +6,7 @@ library(dplyr)
 library(jsonlite)
 library(elastic)
 library(stringr)
+library(shiny)
 
 
 # !!! A9 cluster has been retired !!!
