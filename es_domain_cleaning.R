@@ -95,14 +95,6 @@ main <- function(week, year) {
     dir.create(outputPath)
   }
   
-  
-  creditsFilePath <<- file.path(outputPath, "es_weekly_credits.csv")
-  customerFilePath <<- file.path(outputPath, "es_top_customers.csv")
-  gainerFilePath <<- file.path(outputPath, "es_gainer_loser.csv")
-  newCustFilePath <<- file.path(outputPath, "es_new_customers.csv")
-  droppedCustFilePath <<- file.path(outputPath, "es_dropped_customers.csv")
-  newMetricsFilePath <<- file.path(outputPath, "es_weekly_metrics.csv")
-  
   # global variable to store customer list, so each function doesn't need to retrieve it everytime. 
   
   if(!exists("customerList")) {
@@ -113,63 +105,11 @@ main <- function(week, year) {
     testAccount <<- getTestAccounts()
   }
   
-  wk <- str_pad(week, 2, pad="0")
-  reportFile <- paste("Elasticsearch-metrics-week", wk, ".xlsx", sep = "")
+  if(!exists("qwikLabsAccount")) {
+    qwikLabsAccount <<- getQwikLabsAccounts()
+  }
   
-  #set path
-  reportPath <<- file.path(outputPath, reportFile)
-  
-  # if(file.exists(reportPath)) {
-  #   file.remove(reportPath)
-  # }
-  
-  #file.copy(reportTemplatePath, reportPath)
-  
-  # wb <- loadWorkbook(reportPath)
-  
-  # write date & week number into target report file
-  # wdate <- as.Date(paste(weeknum()$year, weeknum()$week, 1, sep="-"), "%Y-%U-%u")
-  # last_day <- as.Date(wdate) - wday(as.Date(wdate))
-  # t <- data.frame(week = week, last_day = as.character(last_day))
-  # writeData(wb, "weeknum", t)
-  # saveWorkbook(wb, reportPath, overwrite = TRUE)
-  
-  gainer <- calcGainer(week, year)
-  # removeWorksheet(wb, "gainer_loser")
-  # addWorksheet(wb, "gainer_loser")
-  # writeData(wb, "gainer_loser", gainer)
-  # saveWorkbook(wb, reportPath, overwrite = TRUE)
-  
-  top_customers <- calcTopCustomer(week, year)
-  # writeData(wb, "top_customers", top_customers)
-  # saveWorkbook(wb, reportPath, overwrite = TRUE)
-  
-  
-  credits <- calcCredits(week, year)
-  # writeData(wb, "credits", credits)
-  # saveWorkbook(wb, reportPath, overwrite = TRUE)
-  
-  new_cust <- calcNewCustomers(week, year)
-  # removeWorksheet(wb, "new_customers")
-  # addWorksheet(wb, "new_customers")
-  # writeData(wb, "new_customers", new_cust)
-  # saveWorkbook(wb, reportPath, overwrite = TRUE)
-  
-  dropped_cust <- calcDroppedCustomers(week, year)
-  # removeWorksheet(wb, "dropped_customers")
-  # addWorksheet(wb, "dropped_customers")
-  # writeData(wb, "dropped_customers", dropped_cust)
-  # saveWorkbook(wb, reportPath, overwrite = TRUE)
-  
-  # Generate data for current week and history week back to week 20
-  nWeek <- (year - 2016) * 52 + (week - 23)
-  t <- calcWeeklyStatsN(week = week, year = year, nWeek = nWeek)
-  # writeData(wb, "weekly_metrics", t(t), rowNames = TRUE)
-  # 
-  # saveWorkbook(wb, reportPath, overwrite = TRUE)
-  
-  message("*** Elasticsearch metric report for week ", week, " completed! ***")
-  
+ 
   return (0)
   
 }
@@ -245,22 +185,6 @@ getTestAccounts <- function() {
   # t <- bind_rows(t, lab)
   
   return (t)
-}
-
-getGoal <- function(week, year) {
-  if (missing(week)) {
-    week = weeknum(weekDiff = -1)$week
-  }
-  
-  if (missing(year)) {
-    year = weeknum(weekDiff = -1)$year
-  }
-  
-  # Get the weekly customer goal
-  
-  esGoal <- read.csv(goalFilePath)
-  esGoal <- esGoal[esGoal$week == week,]
-  return (esGoal)
 }
 
 
@@ -480,8 +404,8 @@ getInvalidDomains <- function(week, year) {
   meter <- merge(meter, priceList, by=c("usage_type", "region"), all.x = T)
   meter$cost <- meter$price * meter$sum_usage_value
   
-  meter <- merge(meter, customerList, by=c("account_id"), all.x = T)
-  meter <- filter(meter, is.na(company))
+  # meter <- merge(meter, customerList, by=c("account_id"), all.x = T)
+  # meter <- filter(meter, is.na(company))
   
   meter$account_id <- str_pad(as.character(meter$account_id), 12, pad="0")
   meter$usage.1 <- NULL
@@ -491,10 +415,96 @@ getInvalidDomains <- function(week, year) {
   meter$X.x <- NULL
   meter$X.y <- NULL
   meter$client_product_code <- NULL
-  write.csv(meter, "/Users/maghuang/Desktop/es_invalid_domains.csv", row.names = F)
+  
+  x <- getCustomerStatus(meter)
+  meter <- merge(meter, x, by=c("account_id"), all = T)
+  
+  meter <- filter(meter, account_status_code == "Suspended")  
+  
+  y <- getSubscriptionStatus(meter)
+  meter <- merge(meter, y, by = c("account_id"), all = T)
+  
+  
+  write.csv(meter, "/Users/maghuang/Desktop/invalid_domains/es_invalid_domains.csv", row.names = F)
   return (meter)
   
 }
+
+getCustomerStatus <- function(dt) {
+  
+  all_accounts <- dt$account_id
+  
+  queryStr <- paste("'", all_accounts[1], "'", sep = "")
+  for (i in all_accounts) {
+    queryStr<- paste(queryStr, ", '", i, "'", sep = "")
+  }
+  
+  SQL <- paste("select * from awsdw_dm_billing.dim_aws_accounts 
+               where account_id in (", queryStr,")", sep = "");
+  
+  conn <- dbConnect(driver, url)
+  
+  message("- Running query: get customer status... ")
+  t <- dbGetQuery(conn, SQL)
+  dbDisconnect(conn)
+  
+  activeRec <- filter(t, account_status_code == "Active")
+  activeRec$end_effective_date <- ifelse(is.na(activeRec$end_effective_date), as.character(Sys.Date()), as.character(activeRec$end_effective_date))
+  activeRec <- aggregate(end_effective_date~account_id, data = activeRec, max)
+  colnames(activeRec)[which(names(activeRec) == "end_effective_date")] <- "lastActiveDate"
+  
+  
+  suspendRec <- filter(t, account_status_code == "Suspended")
+  suspendRec$start_effective_date <- as.character(suspendRec$start_effective_date)
+  suspendRec <- aggregate(start_effective_date ~ account_id, data = suspendRec, min)
+  colnames(suspendRec)[which(names(suspendRec) == "start_effective_date")] <- "firstSuspendDate"
+  
+  rec <- merge(activeRec, suspendRec, by = c("account_id"), all = T)
+  
+  rec$lastActiveDate <- ifelse(is.na(rec$lastActiveDate), rec$firstSuspendDate, rec$lastActiveDate)
+  # rec$lastActiveDate <- as.Date(rec$lastActiveDate)
+  
+  rec$suspendedDate <- ifelse(rec$lastActiveDate > rec$firstSuspendDate, rec$lastActiveDate, rec$firstSuspendDate)
+  # rec$suspendedDate <- as.Date(rec$suspendDate)
+  
+  rec$suspendedDays <- Sys.Date() - as.Date(rec$suspendedDate)
+  
+  statusRec <- filter(t, current_record_flag == "Y")[,c("account_id", "account_status_code")]
+  statusRec <- merge(statusRec, rec, by = c("account_id"), all.x = T)
+  statusRec$lastActiveDate <- NULL
+  statusRec$firstSuspendDate <- NULL
+  
+  return(statusRec)
+  
+}
+
+getSubscriptionStatus <- function(dt) {
+  
+  all_accounts <- dt$account_id
+  
+  queryStr <- paste("'", all_accounts[1], "'", sep = "")
+  for (i in all_accounts) {
+    queryStr<- paste(queryStr, ", '", i, "'", sep = "")
+  }
+  
+  SQL <- paste("select * from awsdw_ods.o_aws_subscriptions
+               where offering_id in ('607997', '607996', '615324','615325','729920')
+               and account_id in (", queryStr,")", sep = "");
+  
+  conn <- dbConnect(driver, url)
+  
+  message("- Running query: get customer status... ")
+  t <- dbGetQuery(conn, SQL)
+  dbDisconnect(conn)
+  
+  subRec <- aggregate(end_date ~ account_id, t, max)
+  colnames(subRec)[which(names(subRec) == "end_date")] <- "subscription_end_date"
+  subRec$unsubscribedDays <- Sys.Date() - as.Date(subRec$subscription_end_date)
+  
+  return(subRec)
+  
+}
+
 
 domainTrend <- function() {
   m <- data.frame()

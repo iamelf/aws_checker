@@ -1,5 +1,5 @@
 # Some MacOS security feature prevent this library being loaded. The following line is a quick hack.
-dyn.load('/Library/Java/JavaVirtualMachines/jdk1.8.0_111.jdk/Contents/Home/jre/lib/server/libjvm.dylib')
+dyn.load('/Library/Java/JavaVirtualMachines/jdk1.8.0_121.jdk/Contents/Home/jre/lib/server/libjvm.dylib')
 
 library(RJDBC)
 library(dplyr)
@@ -7,6 +7,8 @@ library(jsonlite)
 library(elastic)
 library(stringr)
 library(shiny)
+library(reshape2)
+library(jsonlite)
 
 
 # !!! A9 cluster has been retired !!!
@@ -14,9 +16,10 @@ library(shiny)
 
 #AWS database
 driver <- JDBC("com.amazon.redshift.jdbc41.Driver", "RedshiftJDBC41-1.1.9.1009.jar", identifier.quote="`")
-url <- "jdbc:postgresql://54.85.28.62:8192/datamart?user=maghuang&password=Youcan88$&tcpKeepAlive=true"
+url <- "jdbc:postgresql://dbsm-redshift-prd.db.amazon.com:8192/datamart?user=maghuang&password=Youcan88$&tcpKeepAlive=true"
 
 
+rootPath <- "/Users/maghuang/aws/weekly_report"
 
 # Daily analysis 
 # * daily external, internal revenue
@@ -28,11 +31,26 @@ url <- "jdbc:postgresql://54.85.28.62:8192/datamart?user=maghuang&password=Youca
 # * Single Customer usage trending
 
 
-weeknum <- function(dateStr=Sys.Date()) {
+weeknum <- function(week, year, weekDiff) {
+  if (missing(week) || missing(year)) {
+    dateStr <- Sys.Date()
+  } else {
+    dateStr <- as.Date(paste("2", week, year, sep = "-"), format = "%w-%W-%Y")
+  }
+  if (missing(weekDiff)) {
+    weekDiff <- 0
+  }
   
-  t <- as.POSIXlt(dateStr) 
-  t <- strftime(t,format="%W")
-  return (as.numeric(t))
+  x <- as.Date(dateStr) + weekDiff * 7
+  
+  t <- as.POSIXlt(x)
+  
+  week <- as.numeric(strftime(t,format="%W"))
+  year <- as.numeric(strftime(t,format="%Y"))
+  x <- data.frame(week = week,
+                  year = year)
+  
+  return (x)
 }
 
 getLast7days <- function () {
@@ -179,41 +197,109 @@ dailyUsageChargeDiff <- function (dateStr) {
   return (chrg)
 }
 
-
-getWeeklyCharges <- function(week) {
+getWeeklyMetering <- function(week, year) {
+  
   if (missing(week)) {
-    week <- weeknum() - 1
+    week = weeknum(weekDiff = -1)$week
   }
   
-  message("- Getting weekly charge data for week ", week)
-  
-  outputDir <- "/Users/maghuang/aws/weekly"
-  if (!dir.exists(outputDir)) {
-    dir.create(outputDir)
+  if (missing(year)) {
+    year = weeknum(weekDiff = -1)$year
   }
   
-  fname <- paste("WeeklyCharge_wk", week, ".csv", sep="")
-  fpath <- file.path(outputDir, fname);
+  vname <- paste("meterWeek", week, sep="")
+  if (exists(vname)) {
+    return (eval(as.symbol(vname)))
+  }
+  
+  message("- Getting weekly metering data for week ", week)
+  
+  dataPath <- file.path(rootPath, "data_buffer")
+  
+  if (!dir.exists(dataPath)) {
+    dir.create(dataPath)
+  }
+  
+  fname <- paste("WeeklyMetering_wk", week, ".csv", sep="")
+  fpath <- file.path(dataPath, fname);
   
   if (file.exists(fpath)) {
     t <- read.csv(fpath, sep=",")
     t$account_id <- str_pad(as.character(t$account_id), 12, pad="0")
   } else {
-    SQL <- paste("select account_id, region, billed_amount, is_internal_flag 
-                  from a9cs_metrics.es_weekly_charges
-                  where year = '2016' AND week='", week,"'", sep="")
+    SQL <- paste("select account_id, sum(usage_value) as sum_usage_value, week, year, is_internal_flag, usage_resource, usage_type, region
+                 from a9cs_metrics.es_weekly_metering
+                 where year = '", year, "' and week = '", week,"' 
+                 and usage_type like '%ESInstance%'
+                 group by account_id, week, year, usage_resource, usage_type, is_internal_flag, region;", sep = "")
     conn <- dbConnect(driver, url)
     
-    message("- Connected to DB.")
+    message("- Running query: weekly metering data for week ", week)
+    t <- dbGetQuery(conn, SQL)
+    dbDisconnect(conn)
     
+    t$account_id <- str_pad(as.character(t$account_id), 12, pad="0")
+    t <- subset(t, !(account_id %in% testAccount$account_id))
+    
+    write.csv(t, fpath)
+  }
+  
+  assign(vname, t, envir = .GlobalEnv)
+  message("Metering data for week ", week, " retrieved.")
+  return(t)
+}
+
+
+getWeeklyCharges <- function(week, year) {
+  if (missing(week)) {
+    week = weeknum(weekDiff = -1)$week
+  }
+  
+  if (missing(year)) {
+    year = weeknum(weekDiff = -1)$year
+  }
+  message("- Getting weekly charge data for week ", week)
+  
+  vname <- paste("chargeWeek", week, sep="")
+  if (exists(vname)) {
+    return (eval(as.symbol(vname)))
+  }
+  
+  dataPath <- file.path(rootPath, "data_buffer")
+  
+  if (!dir.exists(dataPath)) {
+    dir.create(dataPath)
+  }
+  
+  fname <- paste("WeeklyCharge_wk", week, ".csv", sep="")
+  fpath <- file.path(dataPath, fname);
+  
+  if (file.exists(fpath)) {
+    t <- read.csv(fpath, sep=",")
+    t$account_id <- str_pad(as.character(t$account_id), 12, pad="0")
+  } else {
+    SQL <- paste("select account_id, 
+                 is_internal_flag, 
+                 billed_amount, 
+                 usage_type, 
+                 region, 
+                 credit_id,
+                 charge_item_desc
+                 from a9cs_metrics.es_weekly_charges
+                 where year = '", year, "' AND week='", week,"'", sep="")
+    conn <- dbConnect(driver, url)
     
     message("- Running query: weekly charge data...")
     t <- dbGetQuery(conn, SQL)
     t$account_id <- str_pad(as.character(t$account_id), 12, pad="0")
-    message("- Query succeed: weekly charge for week ", week, " retrieved.")
     dbDisconnect(conn)
-    write.csv(t, fpath, sep=",")
+    write.csv(t, fpath)
   }
+  #t <- subset(t, !(account_id %in% testAccount$account_id))
+  
+  assign(vname, t, envir = .GlobalEnv)
+  message("Charge data for week ", week, " retrieved.")
+  
   return(t)
 }
 
@@ -401,6 +487,51 @@ getDailyCharge <- function(dateStr) {
     message("Charge data for ", dateStr," saved to file: ", fpath)
   }
 
+  return(t)
+}
+
+
+getDailyMetering <- function(dateStr) {
+  #set the date you want to analysze. If not specified, by default it's yesterday. 
+  if (missing(dateStr)) {
+    dateStr <- format(Sys.Date()-1, "%Y-%m-%d")
+  } else {
+    t <- as.Date(dateStr) 
+    if (abs(as.integer(Sys.Date()-t)) > 500) {
+      message("Wrong date string: ", dateStr)
+      return()
+    }
+    dateStr <- format(t, "%Y-%m-%d")
+  }
+  message("- Getting daily metering data for ", dateStr)
+  
+  outputDir <- "/Users/maghuang/aws/daily"
+  if (!dir.exists(outputDir)) {
+    dir.create(outputDir)
+  }
+  
+  fname <- paste("dailymeter_", dateStr, ".csv", sep="")
+  fpath <- file.path(outputDir, fname);
+  
+  if (file.exists(fpath)) {
+    t <- read.csv(fpath, sep=",")
+    t$account_id <- str_pad(as.character(t$account_id), 12, pad="0")
+  } else {
+    conn <- dbConnect(driver, url)
+    message("- Connected to DB.")
+    
+    sqldaily <- paste("select * from a9cs_metrics.es_daily_metering where request_day = '", dateStr, "'", sep="")
+    
+    
+    message("- Running query: daily revenue data...")
+    t <- dbGetQuery(conn, sqldaily)
+    t$account_id <- str_pad(as.character(t$account_id), 12, pad="0")
+    message("- Query succeed: daily revenue for ", dateStr, " retrieved.")
+    dbDisconnect(conn)
+    write.csv(t, fpath, sep=",")
+    message("Charge data for ", dateStr," saved to file: ", fpath)
+  }
+  
   return(t)
 }
 
@@ -633,13 +764,14 @@ loadDaily2ES <- function(dateStr, nDay=1) {
 
 getCustomerData <- function () {
   
-  outputDir <- "/Users/maghuang/aws/weekly"
-  if (!dir.exists(outputDir)) {
-    dir.create(outputDir)
+  dataPath <- file.path(rootPath, "data_buffer")
+  
+  if (!dir.exists(dataPath)) {
+    dir.create(dataPath)
   }
   
-  fname <- paste("CustomerData-wk", weeknum(),".csv", sep="")
-  fpath <- file.path(outputDir, fname)
+  fname <- paste("CustomerData-wk", weeknum()$week,".csv", sep="")
+  fpath <- file.path(dataPath, fname)
   
   if(file.exists(fpath)) {
     message("Reading customer data from file: ", fpath)
@@ -650,39 +782,67 @@ getCustomerData <- function () {
     conn <- dbConnect(driver, url)
     message("- Connected to DB.")
     
-    SQL <- "WITH account 
-    AS (SELECT DISTINCT account_id, payer_account_id, is_internal_flag 
-    FROM   dim_aws_accounts 
-    WHERE  end_effective_date IS NULL
-    AND    current_record_flag = 'Y')   -- tt33060829 dupe stop
-    SELECT aa.account_id, 
-    coalesce(bb.account_field_value, 'e-mail Domain:' 
-    || aa.email_domain) AS company, 
-    aa.clear_name name, 
-    aa.clear_lower_email email, 
-    account.is_internal_flag,
-    account.payer_account_id
-    FROM   t_customers aa 
-    left outer join o_aws_account_field_values bb 
-    ON ( aa.account_id = bb.account_id 
-    AND bb.account_field_id = 2 ) 
-    left outer join account 
-    ON ( account.account_id = aa.account_id ) WHERE  aa.account_id IN (SELECT DISTINCT account_id 
-    FROM   o_aws_subscriptions 
-    WHERE  offering_id IN ( '26555', '113438', '128046' )
-    AND ( end_date IS NULL 
-    OR end_date >= ( SYSDATE - 8 ) ));"
+    # SQL <- "WITH account
+    # AS (SELECT DISTINCT account_id, payer_account_id, is_internal_flag
+    # FROM   dim_aws_accounts
+    # WHERE  end_effective_date IS NULL
+    # AND    current_record_flag = 'Y')   -- tt33060829 dupe stop
+    # SELECT aa.account_id,
+    # coalesce(bb.account_field_value, 'e-mail Domain:'
+    # || aa.email_domain) AS company,
+    # aa.clear_name name,
+    # aa.clear_lower_email email,
+    # account.is_internal_flag,
+    # account.payer_account_id
+    # FROM   t_customers aa
+    # left outer join o_aws_account_field_values bb
+    # ON ( aa.account_id = bb.account_id
+    # AND bb.account_field_id = 2 )
+    # left outer join account
+    # ON ( account.account_id = aa.account_id ) WHERE  aa.account_id IN (SELECT DISTINCT account_id
+    # FROM   o_aws_subscriptions
+    # -- WHERE  offering_id IN ( '26555', '113438', '128046' )
+    # WHERE  offering_id IN ('607996', '607997', '615324', '615325', '729920' )
+    # AND ( end_date IS NULL
+    # OR end_date >= ( SYSDATE - 9 )));"
+    
+    SQL <- "select account_id, 
+    payer_account_id, 
+    internal, 
+    company_name as account_name,
+    (select company_name from account_dm 
+    where account_dm.account_id = k.payer_account_id ) as payer_name
+    from
+    (select distinct k.account_id,a.payer_account_id,a.company_name,a.internal
+    from a9cs_metrics.es_weekly_metering k join account_dm a 
+    on a.account_id = k.account_id) k"
     
     message("- Running query: customer data...")
     t <- dbGetQuery(conn, SQL)
-    
-    t$account_id <- str_pad(t$account_id, 12, pad="0")
     message("- Query succeed: customer data retrieved.")
     dbDisconnect(conn)
+    t$account_id <- str_pad(t$account_id, 12, pad="0")
+    t$payer_account_id <- str_pad(t$payer_account_id, 12, pad="0")
+    t$is_internal_flag <- ifelse(t$internal == "external", "N", "Y")
+    t$internal <- NULL
     
-    write.csv(t, fpath, sep=",")
+    dt_child <- t[, c("account_id", "payer_account_id", "account_name")]
+    dt_child$payer_account_id <- ifelse(dt_child$account_id == dt_child$payer_account_id, NA, dt_child$payer_account_id)
+    colnames(dt_child)[which(names(dt_child) == "account_name")] <- "company"
+    
+    dt_payer <- t[, c("payer_account_id", "payer_name")]
+    
+    colnames(dt_payer)[which(names(dt_payer) == "payer_account_id")] <- "account_id"
+    dt_payer$payer_account_id <- NA
+    colnames(dt_payer)[which(names(dt_payer) == "payer_name")] <- "company"
+    
+    t <- unique(rbind(dt_child, dt_payer))
+    
+    
+    write.csv(t, fpath, row.names = F)
     message("Customer data saved to file: ", fpath)
   }
+  
   return(t)
 }
 
@@ -842,8 +1002,8 @@ getCustomerCharge <- function(account_id) {
   
   message("- Connected to DB.")
   
-  SQL <- paste("select * from es_daily_charges
-            where computation_date >= '2016-12-01' 
+  SQL <- paste("select * from a9cs_metrics.es_daily_charges
+            where computation_date >= '2016-01-01' 
               and account_id in (", queryStr,")", sep = "")
   
   message("- Running query: weekly usage data...")
@@ -884,16 +1044,14 @@ getCustomerUsage <- function(account_id, type) {
   #Elasticsearch usage
   
   if(type == "ES") {
-    SQL <- paste("select computation_date, 
-               client_product_code, 
+    SQL <- paste("select request_day, 
                  account_id, 
                  usage_type, 
                  usage_value, 
-                 billed_amount, 
-                 operation, 
-                 price_per_unit,
-                 region from a9cs_metrics.es_daily_charges
-                 where computation_date >= '2016-01-01' 
+                 usage_resource,
+                 operation
+                 from a9cs_metrics.es_daily_metering
+                 where request_day >= '2016-01-01' 
                  and account_id in (", queryStr,")", sep = "")
   } else {
     #Cloudsearch usage
@@ -918,7 +1076,7 @@ getCustomerUsage <- function(account_id, type) {
                  operation
                  from a9cs_metrics.daily_metering
                  where request_day >= '2016-01-01' 
-                 and account_id in (", queryStr,")", sep = "")
+                 and account_id = '", account_id,"'", sep = "")
   }
   
   
@@ -1010,19 +1168,40 @@ getSQLData <- function() {
   
   message("- Connected to DB.")
   
-  SQL <- paste("select account_id,
-                 is_internal_flag,
-               billed_amount,
-               usage_type,
-               usage_value,
-               price_per_unit,
-               region,
-               credit_id,
-               charge_item_desc
-               from a9cs_metrics.es_daily_charges
-               where is_internal_flag = 'N'
-               and usage_type like '%t2.micro%'
-               and computation_date like '%2016-11%'", sep="")
+  SQL <- paste("select c.account_id, max(d.registration_date), count(distinct c.offering_id) from awsdw_ods.o_aws_subscriptions c,
+       awsdw_dm_billing.dim_aws_accounts d
+               where c.account_id = d.account_id and
+               c.account_id not in
+               (select distinct account_id from awsdw_ods.o_aws_subscriptions
+               where offering_id in ('607997', '607996', '615324','615325','729920'))
+               
+               and c.account_id in 
+               (SELECT
+               b.account_id
+               FROM (SELECT
+               account_id, 
+               max(start_effective_date) AS start_effective_date
+               FROM awsdw_dm_billing.dim_aws_accounts
+               GROUP BY account_id) a
+               INNER JOIN awsdw_dm_billing.dim_aws_accounts b
+               ON b.account_id = a.account_id and b.start_effective_date = a.start_effective_date
+               
+               where b.account_status_code = 'Active')
+               
+               and c.account_id in
+               (SELECT DISTINCT acct_dim.account_id
+               FROM awsdw_dm_billing.fact_aws_weekly_est_revenue f
+               INNER JOIN  awsdw_dm_billing.DIM_AWS_ACTIVITY_TYPES DIM_ACT ON F.ACTIVITY_TYPE_ID = DIM_ACT.ACTIVITY_TYPE_ID
+               INNER JOIN  awsdw_dm_billing.DIM_EC2_ACCOUNTS acct_dim ON f.account_seq_id = acct_dim.account_seq_id
+               WHERE
+               DIM_ACT.BIZ_PRODUCT_GROUP = 'EC2'
+               AND DIM_ACT.BIZ_PRODUCT_NAME IN ('EC2 Instance Usage', 'EC2 RI Leases')  -- EC2 Box Usage and Rerservations
+               AND f.week_begin_date='2017-01-22'        -- Change the Week Begin Date
+               AND acct_dim.is_internal_flag='N'         -- External accounts only
+               AND acct_dim.is_fraud_flag='N'            -- Non Fraud accounts only
+               AND f.is_compromised_flag='N'             -- Non Compromised usage only
+               AND acct_dim.account_status_code='Active')
+               group by 1", sep="")
   
   message("- Running query: weekly usage data...")
   t <- dbGetQuery(conn, SQL)
@@ -1267,6 +1446,307 @@ workloadType <- function() {
   
   
 }
+
+getCustomerStatus <- function(dt) {
+  
+  all_accounts <- dt$account_id
+  
+  queryStr <- paste("'", all_accounts[1], "'", sep = "")
+  for (i in all_accounts) {
+    queryStr<- paste(queryStr, ", '", i, "'", sep = "")
+  }
+  
+  SQL <- paste("select * from awsdw_dm_billing.dim_aws_accounts 
+               where account_id in (", queryStr,")", sep = "");
+  
+  conn <- dbConnect(driver, url)
+  
+  message("- Running query: get customer status... ")
+  t <- dbGetQuery(conn, SQL)
+  dbDisconnect(conn)
+  
+  activeRec <- filter(t, account_status_code == "Active")
+  activeRec$end_effective_date <- ifelse(is.na(activeRec$end_effective_date), as.character(Sys.Date()), as.character(activeRec$end_effective_date))
+  activeRec <- aggregate(end_effective_date~account_id, data = activeRec, max)
+  colnames(activeRec)[which(names(activeRec) == "end_effective_date")] <- "lastActiveDate"
+  
+  
+  suspendRec <- filter(t, account_status_code == "Suspended")
+  suspendRec$start_effective_date <- as.character(suspendRec$start_effective_date)
+  suspendRec <- aggregate(start_effective_date ~ account_id, data = suspendRec, min)
+  colnames(suspendRec)[which(names(suspendRec) == "start_effective_date")] <- "firstSuspendDate"
+  
+  rec <- merge(activeRec, suspendRec, by = c("account_id"), all = T)
+  
+  rec$lastActiveDate <- ifelse(is.na(rec$lastActiveDate), rec$firstSuspendDate, rec$lastActiveDate)
+  # rec$lastActiveDate <- as.Date(rec$lastActiveDate)
+  
+  rec$suspendedDate <- ifelse(rec$lastActiveDate > rec$firstSuspendDate, rec$lastActiveDate, rec$firstSuspendDate)
+  # rec$suspendedDate <- as.Date(rec$suspendDate)
+  
+  rec$suspendedDays <- Sys.Date() - as.Date(rec$suspendedDate)
+  
+  statusRec <- filter(t, current_record_flag == "Y")[,c("account_id", "account_status_code")]
+  statusRec <- merge(statusRec, rec, by = c("account_id"), all.x = T)
+  statusRec$lastActiveDate <- NULL
+  statusRec$firstSuspendDate <- NULL
+  
+  return(statusRec)
+  
+}
+
+bitcoinDomains <- function() {
+  fdir <- "/Users/maghuang/Downloads/bitcoin/open-domains/"
+  x <- list.files(fdir)
+  
+  filename <- x[grep("*csv", x)]
+  region <- gsub(".csv", "", filename)
+  flist <- data.frame(filename = filename, region = region)
+  
+  allDomain <- data.frame()
+  for (i in 1:nrow(flist)) {
+    x <- flist[i,]
+    fpath <- file.path(fdir, x$filename)
+    dt <- read.csv(fpath)
+    colnames(dt)[1] <- "domain"
+    dt$region <- x$region
+    dt$X <- NULL
+    
+    dt <- transform(dt, tmp=colsplit(dt$domain, ":", names=c("1","2")))
+    colnames(dt)[which(names(dt) == "tmp.1")] <- "account_id"
+    colnames(dt)[which(names(dt) == "tmp.2")] <- "domain_name"
+    allDomain <- rbind(allDomain, dt)
+  }
+  allDomain$account_id <- str_pad(allDomain$account_id, 12, pad="0")
+  
+  domainStats <- data.frame(ransomed = nrow(allDomain))
+  
+  message("== Total ", domainStats$ransomed, " domains are compromised with a ransom message.")
+  # suspendedDomains <- read.csv("/Users/maghuang/Downloads/bitcoin/es_invalid_domains.csv")
+  # allDomain <- filter(allDomain, !account_id %in% suspendedDomains$account_id)
+  
+  domainStatus <- getCustomerStatus(allDomain)
+  allDomain <- merge(allDomain, domainStatus[,c("account_id", "account_status_code")], by = c("account_id"), all.x = T)
+  
+  domainStats$suspended <- domainStats$ransomed - nrow(allDomain)
+  message("== Of the ransomed domains, ", domainStats$suspended, " domains are suspended.")
+  
+  # if(!exists("customerList")) {
+  #   customerList <<- getCustomerData()
+  # }
+  
+  # allDomain <- merge(allDomain, customerList[, c("account_id", "payer_account_id", "is_internal_flag")], by = c("account_id"), all.x = T)
+  # allDomain <- filter(allDomain, is_internal_flag == "N")
+  
+  # domainStats$external <- domainStats$ransomed - domainStats$ransomed - nrow(allDomain)
+  message("== Of the active (non-suspended) domains, ", domainStats$external, "domains are active and external. ")
+  
+  t1 <- getWeeklyCharges()
+  
+  tmp <- unique(t1[, c("account_id", "is_internal_flag")])
+  allDomain <- merge(allDomain, tmp, by = c("account_id"), all.x = T)
+  # t1 <- filter(t1, is_internal_flag == "N")
+  # t1 <- merge(t1, customerList, by = c("account_id"), all.x = TRUE)
+  # t1 <- within(t1, payer_account_id <- ifelse(!is.na(payer_account_id),payer_account_id,account_id))
+  # t1 <- aggregate(billed_amount ~ payer_account_id, data = t1, sum)
+  # t1 <- transform(t1, rank=rank(-billed_amount))
+  
+  # allDomain <- within(allDomain, payer_account_id <- ifelse(!is.na(payer_account_id),payer_account_id,account_id))
+  # allDomain <- merge(allDomain, t1, by = c("payer_account_id"), all.x = T)
+  
+  # allDomain <- allDomain[order(-allDomain$billed_amount),]
+  # colnames(allDomain)[which(names(allDomain) == "billed_amount")] <- "customer_weekly_spending"
+  
+  allDomain$arn <- paste0("arn:aws:es:", allDomain$region, ":", allDomain$account_id, ":domain/", allDomain$domain_name)
+  allDomain$domain <- NULL
+  allDomain$X <- NULL
+  allDomain$name <- NULL
+  allDomain$email <- NULL
+  
+  #allDomain$payer_account_id <- str_pad(as.character(t$account_id), 12, pad="0")
+  
+  # pl <- getPricePlan(2)
+  
+  supportLevel <- read.csv("/Users/maghuang/Downloads/bitcoin/customer_support_level.csv")
+  supportLevel$account_id <- str_pad(supportLevel$account_id, 12, pad = '0')
+  
+  allDomain <- merge(allDomain, supportLevel[, c("account_id", "product_name")], by=c("account_id"), all.x = T)
+  
+  impactedList <- read.csv("/Users/maghuang/Downloads/bitcoin/customer_without_support.csv", sep = "|")
+  
+  impactedList <- filter(impactedList, !grepl("arn", account_id))
+  impactedList$impacted <- "Y"
+  allDomain <- merge(allDomain, impactedList, by = c("account_id"), all.x=T)
+  
+  outputPath <- file.path()
+  write.csv(allDomain, "/Users/maghuang/Downloads/bitcoin/domain_list.csv", row.names = F)
+  
+  nonSupportDomain <- filter(allDomain, is_internal_flag == "N")
+  nonSupportDomain <- filter(nonSupportDomain, account_status_code == "Active")
+  nonSupportDomain <- filter(nonSupportDomain, !(account_id %in% supportLevel$account_id))
+  
+  # nonSupportDomain <- filter(nonSupportDomain, !(payer_account_id %in% supportLevel$account_id))
+  nonSupportDomain$arn <- trimws(nonSupportDomain$arn, which = c("both", "left", "right"))
+  
+  write.csv(nonSupportDomain, "/Users/maghuang/Downloads/bitcoin/AES_customer_without_support_full_list.csv", row.names = F)
+  
+  nonSupportDomain <- filter(nonSupportDomain, impacted != "Y")
+  x <- aggregate(arn ~ account_id, data = nonSupportDomain, paste, collapse = "|")
+  x$account_id <- str_pad(x$account_id, 12, pad = '0')
+  write.table(x, "/Users/maghuang/Downloads/bitcoin/customer_nosupport_noimpact.csv",sep = "|", row.names = F, quote=FALSE)
+  
+  return (allDomain)
+  
+}
+
+getDomainConfig <- function(dateStr) {
+  if (missing(dateStr)) {
+    t<- Sys.Date()-1
+   
+  } else {
+    t <- as.Date(dateStr) 
+    if (abs(as.integer(Sys.Date()-t)) > 100) {
+      message("Wrong date string: ", dateStr)
+      return()
+    }
+  }
+  dateStr <- as.character(t)
+  
+  dateStr1 <- as.character(as.Date(dateStr) - 1)
+  dateStr2 <- as.character(as.Date(dateStr) - 2)
+  
+  
+  # meter0 <- getDailyMetering(dateStr)
+  
+  # meter2 <- getDailyMetering(dateStr2)
+  meter1 <- getDailyMetering(dateStr)
+  charge1 <- getDailyCharge(dateStr)
+  charge1 <- unique(charge1[,c("account_id", "is_internal_flag")])
+  
+  meter1 <- filter(meter1, account_id %in% charge1$account_id)
+  meter1 <- merge(meter1, charge1[, c("account_id", "is_internal_flag")], all.x = T)
+  
+  #meter1 <- filter(meter1, usage_resource %in% meter0$usage_resource)
+  #meter1 <- filter(meter1, usage_resource %in% meter2$usage_resource)
+  
+  meter1_storage <- filter(meter1, grepl("Storage|PIOPS", usage_type))
+  meter1_storage <- aggregate(usage_value ~ usage_resource, data = meter1_storage, sum)
+  colnames(meter1_storage)[which(names(meter1_storage) == "usage_value")] <- "storage_size"
+  
+  meter1_instance <- filter(meter1, grepl("ESInstance", usage_type))
+  
+  price <- getPricePlan(2)
+  colnames(price)[which(names(price) == "Usage.Type")] <- "usage_type"
+  colnames(price)[which(names(price) == "Price.Unit")] <- "price"
+  price <- price[, c("usage_type", "price")]
+  meter1_instance <- merge(meter1_instance, price, by=c("usage_type"), all.x = TRUE)
+  meter1_instance <- filter(meter1_instance, !is.na(price))
+  
+  nodecount <- aggregate(usage_value ~ usage_resource, data = meter1_instance, sum)
+  colnames(nodecount)[which(names(nodecount) == "usage_value")] <- "instance_hour"
+  
+  meter1_instance$tmp <- paste0(meter1_instance$price, "-", meter1_instance$usage_type)
+  nodetype <- aggregate(tmp ~ usage_resource+account_id+is_internal_flag, data = meter1_instance, max)
+  
+  domainConfig <- merge(nodetype, nodecount, by = c("usage_resource"), all = T)
+  domainConfig <- merge(domainConfig, meter1_storage, by = c("usage_resource"), all=T)
+  
+  domainConfig <- transform(domainConfig, usage=colsplit(domainConfig$tmp, ":", names=c("1","2")))
+  colnames(domainConfig)[which(names(domainConfig) == "usage.2")] <- "instance_type"
+  domainConfig$usage.1 <- NULL
+  domainConfig$storage_type <- ifelse(is.na(domainConfig$storage_size), "ephemeral", "EBS")
+  
+  ephemeral_mapping <- data.frame(instance_type = c("m3.medium","m3.large","m3.xlarge","m3.2xlarge",
+                                                    "r3.large", "r3.xlarge", "r3.2xlarge","r3.4xlarge","r3.8xlarge", 
+                                                    "i2.xlarge","i2.2xlarge", "i2.4xlarge", "i2.8xlarge"),
+                                  ephemeral_storage_size = c(4, 32, 80, 160, 32, 80, 160, 320, 640, 800, 1600, 3200, 6400))
+  domainConfig <- merge(domainConfig, ephemeral_mapping, by = c("instance_type"), all.x = T)
+  
+  domainConfig$node_count <- round(domainConfig$instance_hour/24)
+  
+  domainConfig$storage_size <- ifelse(domainConfig$storage_type == "EBS", domainConfig$storage_size, domainConfig$ephemeral_storage_size * domainConfig$node_count)
+  
+  domainConfig <- filter(domainConfig, !is.na(account_id))
+  
+  domainConfig$tmp <- NULL
+  domainConfig$ephemeral_storage_size <- NULL
+  
+  write.csv(domainConfig, "/Users/maghuang/Downloads/domainConfig.csv", row.names = F)
+  
+  return (domainConfig)
+}
+
+test <- function() {
+  t <- Sys.Date()-1
+  for (i in c(0:9)) {
+    dateStr <- as.character(t - 7*i)
+    domainConfig <- getDomainConfig(dateStr)
+    x <- filter(domainConfig, storage_type != "EBS")
+    message("----instance storage size on ", dateStr, "is ", sum(x$storage_size, na.rm = T))
+ 
+  }
+  
+}
+
+getEC2Prices <- function() {
+  t <- read.csv("/Users/maghuang/Downloads/AmazonEC2PublicPlan_Gamma.csv")
+  
+  ec2 <- filter(t, grepl("Linux", Description))
+  ec2 <- filter(ec2, grepl("BoxUsage", Usage.Type))
+  ec2 <- filter(ec2, !grepl("Dedicated", Description))
+  ec2 <- transform(ec2, tmp=colsplit(ec2$Usage.Type, ":", names=c("1","2")))
+  colnames(ec2)[which(names(ec2) == "tmp.1")] <- "region"
+  colnames(ec2)[which(names(ec2) == "tmp.2")] <- "instance_type"
+  ec2$region <- gsub("BoxUsage", "", ec2$region)
+  ec2$region <- gsub("-", "", ec2$region)
+  
+  #ec2 <- ec2[, c("Price.Unit", "Usage.Unit", "region", "instance_type")]
+  
+  storage <- filter(t, grepl("VolumeUsage|VolumeP-IOPS", Usage.Type))
+  storage <- filter(storage, !grepl("sc1|st1", Usage.Type))
+  storage <- transform(storage, tmp=colsplit(storage$Usage.Type, ":", names=c("1","2")))
+  colnames(storage)[which(names(storage) == "tmp.1")] <- "region"
+  colnames(storage)[which(names(storage) == "tmp.2")] <- "instance_type"
+  
+  storage$region <- gsub("EBS", "", storage$region)
+  storage$region <- gsub("-", "", storage$region)
+  storage$instance_type <- gsub("VolumeUsage.gp2", "GP2-Storage", storage$instance_type)
+  storage$instance_type <- gsub("VolumeUsage.piops", "PIOPS-Storage", storage$instance_type)
+  storage$instance_type <- gsub("VolumeUsage", "Magnetic-Storage", storage$instance_type)
+  storage$instance_type <- gsub("VolumeP-IOPS.piops", "PIOPS", storage$instance_type)
+  
+  
+  #storage <- storage[, c("Price.Unit", "Usage.Unit", "region", "instance_type")]
+  
+  x <- rbind(ec2, storage)
+  return (x)
+  
+}
+
+
+
+generateESPriceList <- function() {
+  regions <- read.csv("/Users/maghuang/Documents/Pricing/new_instance_type/regions.csv")
+  pm <- read.csv("/Users/maghuang/Documents/Pricing/new_instance_type/new_es_price_matrix.csv")
+  pm <- melt(pm, id=c("Price.prefix"))
+  
+  pm <- filter(pm, value > 0)
+  
+  pm$variable <- gsub("NA.", "", pm$variable)
+  pm$Usage.Type <- paste0(pm$variable, ifelse(pm$variable=="", "", "-"), pm$Price.prefix)
+  
+  
+  instanceList <- filter(pm, grepl("ESInstance", Usage.Type))
+  
+  instanceList <- merge(instanceList, regions, by.x = c("variable"), by.y = c("prefix"), all.x = T)
+  
+  currentProduct <- read.csv("/Users/maghuang/Documents/Pricing/new_instance_type/current_aes_products.csv")
+  
+  instanceList <- filter(instanceList, !Usage.Type %in% currentProduct$usageType)
+}
+
+
+
 
 
 

@@ -174,11 +174,6 @@ getTestAccounts <- function() {
   t <- read.csv(testAccountFilePath)
   t$account_id <- str_pad(as.character(t$account_id), 12, pad="0")
   
-  # lab <- data.frame(account_id = getQwikLabsAccounts())
-  # lab$Type <- "test"
-  # 
-  # t <- bind_rows(t, lab)
-  
   return (t)
 }
 
@@ -400,8 +395,8 @@ getInvalidDomains <- function(week, year) {
   meter <- merge(meter, priceList, by=c("usage_type", "region"), all.x = T)
   meter$cost <- meter$price * meter$sum_usage_value
   
-  meter <- merge(meter, customerList, by=c("account_id"), all.x = T)
-  meter <- filter(meter, is.na(company))
+  #meter <- merge(meter, customerList, by=c("account_id"), all.x = T)
+  #meter <- filter(meter, is.na(company))
   
   meter$account_id <- str_pad(as.character(meter$account_id), 12, pad="0")
   meter$usage.1 <- NULL
@@ -411,8 +406,93 @@ getInvalidDomains <- function(week, year) {
   meter$X.x <- NULL
   meter$X.y <- NULL
   meter$client_product_code <- NULL
-  write.csv(meter, "/Users/maghuang/Desktop/cs_invalid_domains.csv", row.names = F)
+  
+  
+  x <- getCustomerStatus(meter)
+  meter <- merge(meter, x, by=c("account_id"), all = T)
+
+  meter <- filter(meter, account_status_code == "Suspended")  
+  
+  y <- getSubscriptionStatus(meter)
+  meter <- merge(meter, y, by = c("account_id"), all = T)
+  
+  write.csv(meter, "/Users/maghuang/Desktop/invalid_domains/cs_invalid_domains.csv", row.names = F)
   return (meter)
+  
+}
+
+getCustomerStatus <- function(dt) {
+  
+  all_accounts <- dt$account_id
+  
+  queryStr <- paste("'", all_accounts[1], "'", sep = "")
+  for (i in all_accounts) {
+    queryStr<- paste(queryStr, ", '", i, "'", sep = "")
+  }
+  
+  SQL <- paste("select * from awsdw_dm_billing.dim_aws_accounts 
+          where account_id in (", queryStr,")", sep = "");
+  
+  conn <- dbConnect(driver, url)
+  
+  message("- Running query: get customer status... ")
+  t <- dbGetQuery(conn, SQL)
+  dbDisconnect(conn)
+  
+  activeRec <- filter(t, account_status_code == "Active")
+  activeRec$end_effective_date <- ifelse(is.na(activeRec$end_effective_date), as.character(Sys.Date()), as.character(activeRec$end_effective_date))
+  activeRec <- aggregate(end_effective_date~account_id, data = activeRec, max)
+  colnames(activeRec)[which(names(activeRec) == "end_effective_date")] <- "lastActiveDate"
+  
+  
+  suspendRec <- filter(t, account_status_code == "Suspended")
+  suspendRec$start_effective_date <- as.character(suspendRec$start_effective_date)
+  suspendRec <- aggregate(start_effective_date ~ account_id, data = suspendRec, min)
+  colnames(suspendRec)[which(names(suspendRec) == "start_effective_date")] <- "firstSuspendDate"
+  
+  rec <- merge(activeRec, suspendRec, by = c("account_id"), all = T)
+  
+  rec$lastActiveDate <- ifelse(is.na(rec$lastActiveDate), rec$firstSuspendDate, rec$lastActiveDate)
+  # rec$lastActiveDate <- as.Date(rec$lastActiveDate)
+  
+  rec$suspendedDate <- ifelse(rec$lastActiveDate > rec$firstSuspendDate, rec$lastActiveDate, rec$firstSuspendDate)
+  # rec$suspendedDate <- as.Date(rec$suspendDate)
+  
+  rec$suspendedDays <- Sys.Date() - as.Date(rec$suspendedDate)
+  
+  statusRec <- filter(t, current_record_flag == "Y")[,c("account_id", "account_status_code")]
+  statusRec <- merge(statusRec, rec, by = c("account_id"), all.x = T)
+  statusRec$lastActiveDate <- NULL
+  statusRec$firstSuspendDate <- NULL
+  
+  return(statusRec)
+  
+}
+
+getSubscriptionStatus <- function(dt) {
+  
+  all_accounts <- dt$account_id
+  
+  queryStr <- paste("'", all_accounts[1], "'", sep = "")
+  for (i in all_accounts) {
+    queryStr<- paste(queryStr, ", '", i, "'", sep = "")
+  }
+  
+  SQL <- paste("select * from awsdw_ods.o_aws_subscriptions
+               where offering_id in ('26555', '481304', '497694','128046','113438')
+               and account_id in (", queryStr,")", sep = "");
+  
+  conn <- dbConnect(driver, url)
+  
+  message("- Running query: get customer subscription status... ")
+  t <- dbGetQuery(conn, SQL)
+  dbDisconnect(conn)
+  
+  subRec <- aggregate(end_date ~ account_id, t, max)
+  colnames(subRec)[which(names(subRec) == "end_date")] <- "subscription_end_date"
+  subRec$unsubscribedDays <- Sys.Date() - as.Date(subRec$subscription_end_date)
+  
+  return(subRec)
   
 }
 

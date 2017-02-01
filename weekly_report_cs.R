@@ -1,7 +1,7 @@
 # Some MacOS security feature prevent this library being loaded. The following line is a quick hack.
 # http://charlotte-ngs.github.io/2016/01/MacOsXrJavaProblem.html
 Sys.setenv(JAVA_HOME='/Library/Java/JavaVirtualMachines/jdk1.8.0_111.jdk/Contents/Home/jre')
-dyn.load('/Library/Java/JavaVirtualMachines/jdk1.8.0_111.jdk/Contents/Home/jre/lib/server/libjvm.dylib')
+dyn.load('/Library/Java/JavaVirtualMachines/jdk1.8.0_121.jdk/Contents/Home/jre/lib/server/libjvm.dylib')
 
 library(RJDBC)
 library(dplyr)
@@ -18,6 +18,8 @@ library(lubridate)
 #   t <- strftime(t,format="%W")
 #   return (as.numeric(t))
 # }
+
+
 
 weeknum <- function(week, year, weekDiff) {
   if (missing(week) || missing(year)) {
@@ -46,9 +48,10 @@ weeknum <- function(week, year, weekDiff) {
 
 #AWS database
 driver <- JDBC("com.amazon.redshift.jdbc41.Driver", "RedshiftJDBC41-1.1.9.1009.jar", identifier.quote="`")
-url <- "jdbc:postgresql://54.85.28.62:8192/datamart?user=maghuang&password=Youcan88$&tcpKeepAlive=true"
+url <- "jdbc:postgresql://dbsm-redshift-prd.db.amazon.com:8192/datamart?user=maghuang&password=Youcan88$&tcpKeepAlive=true"
 
 
+rootPath <- "/Users/maghuang/aws/weekly_report"
 dataPath <- "/Users/maghuang/aws/weekly_report"
 
 # Input files
@@ -56,8 +59,6 @@ inputPath <- file.path(dataPath, "_input")
 
 priceFilePath <- file.path(inputPath, "cs_prices.csv")
 testAccountFilePath <- file.path(inputPath, "test_accounts.csv")
-goalFile <- paste("cs_goal_", as.integer(format(Sys.Date(), "%Y")), ".csv", sep="")
-goalFilePath <- file.path(inputPath, goalFile)
 ec2countFilePath <- file.path(inputPath, "cs_ec2count.csv")
 metricsFilePath <- file.path(inputPath, "cs_weekly_metrics.csv")
 #reportTemplatePath <- file.path(inputPath, "CloudSearch-metrics-report-template.xlsx")
@@ -177,7 +178,7 @@ clearEnv <- function()  {
   }
   
   # Remove the buffer file for last week
-  dataPath <- file.path(rootPath, "data_buffer")
+  dataPath <- file.path(dataPath, "data_buffer")
   
   fname <- paste("cs_WeeklyCharge_wk", weeknum(weekDiff = -1)$week, ".csv", sep="")
   fpath <- file.path(dataPath, fname);
@@ -248,6 +249,8 @@ getGoal <- function(week, year) {
   }
   
   # Get the weekly customer goal
+  goalFile <- paste("cs_goal_", year, ".csv", sep="")
+  goalFilePath <- file.path(inputPath, goalFile)
   
   csGoal <- read.csv(goalFilePath)
   csGoal <- csGoal[csGoal$week == week,]
@@ -263,7 +266,7 @@ getCustomerData <- function () {
     dir.create(dataPath)
   }
   
-  fname <- paste("CustomerData-wk", weeknum()$week,".csv", sep="")
+  fname <- paste("cs_customerData-wk", weeknum()$week,".csv", sep="")
   fpath <- file.path(dataPath, fname)
   
   if(file.exists(fpath)) {
@@ -275,47 +278,40 @@ getCustomerData <- function () {
     conn <- dbConnect(driver, url)
     message("- Connected to DB.")
     
-    # SQL <- "WITH account 
-    # AS (SELECT DISTINCT account_id, payer_account_id, is_internal_flag 
-    # FROM   dim_aws_accounts 
-    # WHERE  end_effective_date IS NULL
-    # AND    current_record_flag = 'Y')   -- tt33060829 dupe stop
-    # SELECT aa.account_id, 
-    # coalesce(bb.account_field_value, 'e-mail Domain:' 
-    # || aa.email_domain) AS company, 
-    # aa.clear_name name, 
-    # aa.clear_lower_email email, 
-    # account.is_internal_flag,
-    # account.payer_account_id
-    # FROM   t_customers aa 
-    # left outer join o_aws_account_field_values bb 
-    # ON ( aa.account_id = bb.account_id 
-    # AND bb.account_field_id = 2 ) 
-    # left outer join account 
-    # ON ( account.account_id = aa.account_id ) WHERE  aa.account_id IN (SELECT DISTINCT account_id 
-    # FROM   o_aws_subscriptions
-    # -- WHERE  offering_id IN ( '26555', '113438', '128046' )
-    # WHERE  offering_id IN ('607996', '607997', '615324', '615325', '729920' )
-    # AND ( end_date IS NULL 
-    # OR end_date >= ( SYSDATE - 9 )));"
-    
-    SQL <- "select distinct aa.account_id as account_id,
-    payer_account_id,
-    company_name as company,
-    customer_clear_lower_email as email,
-    CASE WHEN internal= 'external' then 'N' else 'Y' END as is_internal_flag 
-    from public.account_dm aa join  awsdw_ods.o_aws_subscriptions k on k.account_id = aa.account_id 
-    and offering_id IN ('607996', '607997', '615324', '615325', '729920' )
-    and NVL(end_date,sysdate) >= ( SYSDATE - 9 );"
+    SQL <- "select account_id, 
+    payer_account_id, 
+    internal, 
+    company_name as account_name,
+    (select company_name from account_dm 
+    where account_dm.account_id = k.payer_account_id ) as payer_name
+    from
+    (select distinct k.account_id,a.payer_account_id,a.company_name,a.internal
+    from a9cs_metrics.weekly_metering k join account_dm a 
+    on a.account_id = k.account_id) k"
     
     message("- Running query: customer data...")
     t <- dbGetQuery(conn, SQL)
-    
-    t$account_id <- str_pad(t$account_id, 12, pad="0")
     message("- Query succeed: customer data retrieved.")
     dbDisconnect(conn)
+    t$account_id <- str_pad(t$account_id, 12, pad="0")
+    t$payer_account_id <- str_pad(t$payer_account_id, 12, pad="0")
+    t$is_internal_flag <- ifelse(t$internal == "external", "N", "Y")
+    t$internal <- NULL
     
-    write.csv(t, fpath)
+    dt_child <- t[, c("account_id", "payer_account_id", "account_name")]
+    dt_child$payer_account_id <- ifelse(dt_child$account_id == dt_child$payer_account_id, NA, dt_child$payer_account_id)
+    colnames(dt_child)[which(names(dt_child) == "account_name")] <- "company"
+    
+    dt_payer <- t[, c("payer_account_id", "payer_name")]
+    
+    colnames(dt_payer)[which(names(dt_payer) == "payer_account_id")] <- "account_id"
+    dt_payer$payer_account_id <- NA
+    colnames(dt_payer)[which(names(dt_payer) == "payer_name")] <- "company"
+    
+    t <- unique(rbind(dt_child, dt_payer))
+    
+    
+    write.csv(t, fpath, row.names = F)
     message("Customer data saved to file: ", fpath)
   }
   
@@ -456,7 +452,12 @@ countCustomers <- function(week, year) {
   
   # Get the weekly customer goal
   csGoal <- getGoal(week, year)
-  x$paying_customer_goal <- csGoal$paying_customer_goal
+  if (!is.null(csGoal$paying_customer_goal)) {
+    x$paying_customer_goal <- csGoal$paying_customer_goal
+  }
+  if (!is.null(csGoal$active_customer_goal)) {
+    x$active_customer_goal <- csGoal$active_customer_goal
+  }
   
   # 1. Get total customers list
   # 2. Divide them into (internal, external)
@@ -767,15 +768,15 @@ countRevenue <- function(week, year) {
   top_external_customers <- merge(top_external_customers, customerList[,c("account_id", "company")], by = c("account_id"), all.x = TRUE)
   top_external_customers <- arrange(top_external_customers,desc(billed_amount))
   
-  x$top_external_customer_1 = str_pad(as.character(top_external_customers$account_id[1]), 12, pad="0")
+  x$top_external_customer_1 = paste0("X", str_pad(top_external_customers$account_id[1], 12, pad="0"))
   x$top_external_customer_1_revenue = top_external_customers$billed_amount[1]
-  x$top_external_customer_2 = str_pad(as.character(top_external_customers$account_id[2]), 12, pad="0")
+  x$top_external_customer_2 = paste0("X", str_pad(top_external_customers$account_id[2], 12, pad="0"))
   x$top_external_customer_2_revenue = top_external_customers$billed_amount[2]
-  x$top_external_customer_3 = str_pad(as.character(top_external_customers$account_id[3]), 12, pad="0")
+  x$top_external_customer_3 = paste0("X", str_pad(top_external_customers$account_id[3], 12, pad="0"))
   x$top_external_customer_3_revenue = top_external_customers$billed_amount[3]
-  x$top_external_customer_4 = str_pad(as.character(top_external_customers$account_id[4]), 12, pad="0")
+  x$top_external_customer_4 = paste0("X", str_pad(top_external_customers$account_id[4], 12, pad="0"))
   x$top_external_customer_4_revenue = top_external_customers$billed_amount[4]
-  x$top_external_customer_5 = str_pad(as.character(top_external_customers$account_id[5]), 12, pad="0")
+  x$top_external_customer_5 = paste0("X", str_pad(top_external_customers$account_id[5], 12, pad="0"))
   x$top_external_customer_5_revenue = top_external_customers$billed_amount[5]
   
   revenue_customer <- aggregate(billed_amount ~ account_id, charge_internal, sum)
@@ -784,15 +785,15 @@ countRevenue <- function(week, year) {
   top_internal_customers <- merge(top_internal_customers, customerList[,c("account_id", "company")], by = c("account_id"), all.x = TRUE)
   top_internal_customers <- arrange(top_internal_customers,desc(billed_amount))
   
-  x$top_internal_customer_1 = str_pad(as.character(top_internal_customers$account_id[1]), 12, pad="0")
+  x$top_internal_customer_1 = paste0("X", str_pad(top_internal_customers$account_id[1], 12, pad="0"))
   x$top_internal_customer_1_revenue = top_internal_customers$billed_amount[1]
-  x$top_internal_customer_2 = str_pad(as.character(top_internal_customers$account_id[2]), 12, pad="0")
+  x$top_internal_customer_2 = paste0("X", str_pad(top_internal_customers$account_id[2], 12, pad="0"))
   x$top_internal_customer_2_revenue = top_internal_customers$billed_amount[2]
-  x$top_internal_customer_3 = str_pad(as.character(top_internal_customers$account_id[3]), 12, pad="0")
+  x$top_internal_customer_3 = paste0("X", str_pad(top_internal_customers$account_id[3], 12, pad="0"))
   x$top_internal_customer_3_revenue = top_internal_customers$billed_amount[3]
-  x$top_internal_customer_4 = str_pad(as.character(top_internal_customers$account_id[4]), 12, pad="0")
+  x$top_internal_customer_4 = paste0("X", str_pad(top_internal_customers$account_id[4], 12, pad="0"))
   x$top_internal_customer_4_revenue = top_internal_customers$billed_amount[4]
-  x$top_internal_customer_5 = str_pad(as.character(top_internal_customers$account_id[5]), 12, pad="0")
+  x$top_internal_customer_5 = paste0("X", str_pad(top_internal_customers$account_id[5], 12, pad="0"))
   x$top_internal_customer_5_revenue = top_internal_customers$billed_amount[5]
   
   x$week <- NULL
@@ -965,7 +966,8 @@ countEC2 <- function(week, year) {
   
   chrg_account <- getWeeklyCharges (week, year)
   chrg_account <- filter(chrg_account, is_internal_flag == "N")
-  chrg_account <- setdiff(chrg_account$account_id, testAccount)
+  chrg_account <- setdiff(chrg_account$account_id, testAccount$account_id)
+  chrg_account <- setdiff(chrg_account, qwikLabsAccount)
   
   y <- unique(intersect(ec2_accounts$account_id, chrg_account))
   
@@ -1310,11 +1312,6 @@ countCost <- function(week, year) {
   costs <- merge(monitor_usage, priceList, by = c("region", "usage_type", "client_product_code"), all.x = TRUE)
   monitor_cost <- sum(costs$price * costs$usage_value, na.rm = TRUE)
   
-  #cost of SWF, cloudFront and Router53
-  # swf_cost <- 0.5 * sum(filter(t, client_product_code=="AmazonSWF")$billed_amount)
-  # cf_cost <- 0.5 * sum(filter(t, client_product_code=="AmazonCloudFront")$billed_amount)
-  # r53_cost <- 0.5 * sum(filter(t, client_product_code=="AmazonRoute53")$billed_amount)
-  
   # AWSP, Bandwidth Costs
   # Completely aligned with Yana's model: 11% * (ec2_cost + ebs_cost + elb_cost + s3_cost)
   
@@ -1336,9 +1333,7 @@ countCost <- function(week, year) {
                                      monitor_cost, 
                                      s3_cost, 
                                      dynamo_cost))
-                                     # swf_cost, 
-                                     # cf_cost,
-                                     # r53_cost))
+                                    
   # Calculate margin,
   # Following the assumption in Yana's model:
   # The cost for internal & external customer are propotional to their revenue
