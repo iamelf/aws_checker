@@ -43,6 +43,16 @@ weeknum <- function(week, year, weekDiff) {
   return (x)
 }
 
+weekDates <- function(week, year) {
+  if (missing(week) || missing(year)) {
+    x <- weeknum(weekDiff = -1)
+    week <- x$week
+    year <- x$year
+  }
+  
+  return(as.Date(paste(year, week, c(1:7), sep="-"), "%Y-%U-%u"))
+}
+
 # !!! A9 cluster has been retired !!!
 # url <- "jdbc:redshift://a9dba-fin-rs2.db.amazon.com:8192/a9aws?user=maghuang&password=pw20160926NOW&tcpKeepAlive=true&ssl=true&sslfactory=org.postgresql.ssl.NonValidatingFactory"
 
@@ -693,7 +703,10 @@ countRevenue <- function(week, year) {
   
   x$revenue_external_gross <- sum(charge_external_gross$billed_amount)
   x$revenue_internal <- sum(charge_internal$billed_amount)
-  x$credit_amount <- sum(charge_external_credit$billed_amount)
+  
+  tmp <- calcCreditsAmount(year = year, week = week)
+  x$credit_amount <- tmp$credits
+  x$refund_amount <- tmp$refunds
   
   csGoal <- getGoal(week, year)
   
@@ -1163,41 +1176,124 @@ calcCredits <- function(week, year) {
     year = weeknum(weekDiff = -1)$year
   }
   
+  wdates <- weekDates(year = year, week = week)
+  
   x <- data_frame(week = week)
   
-  charge <- getWeeklyCharges(week = week, year = year)
-  charge <- charge[!(charge$account_id %in% testAccount$account_id), ]
+  SQL <- paste0("SELECT fct.computation_date, 
+                fct.charge_item_desc as description,
+                acct.account_id,
+                fct.charge_period_start_date, 
+                fct.charge_period_end_date, 
+                product.product_code,                 
+                fct.credit_id,
+                fct.base_currency_code,
+                SUM(fct.billed_amount*amortization_factor) as credits,
+                SUM(fct.refund_amount*amortization_factor) as refunds
+                FROM   awsdw_dm_billing.fact_aws_daily_est_revenue_reporting fct, 
+                awsdw_dm_billing.dim_aws_accounts acct, 
+                awsdw_dm_billing.dim_aws_products product
+                WHERE  fct.account_seq_id = acct.account_seq_id 
+                AND product.product_seq_id = fct.product_seq_id 
+                AND product.product_code = 'AmazonCloudSearch'       
+                AND fct.computation_date >= '", min(wdates), "'", 
+                "AND fct.computation_date <= '", max(wdates), "'", 
+                "GROUP  BY fct.computation_date, 
+                fct.charge_item_desc, 
+                acct.account_id,
+                fct.charge_period_start_date, 
+                fct.charge_period_end_date, 
+                product.product_code,
+                fct.credit_id,
+                charge_item_desc,
+                fct.base_currency_code
+                having  SUM(fct.billed_amount*amortization_factor) <0 or SUM(fct.refund_amount*amortization_factor) <0")
   
-  charge <- charge[!is.na(charge$credit_id), ]
+  conn <- dbConnect(driver, url)
+  message("Getting CloudSearch credits and refund data. ")
+  charge <- dbGetQuery(conn, SQL)
   
-  credits <- merge(charge, customerList, by=c("account_id"), all.x=TRUE)
-  credits<- within(credits, account_id <- ifelse(!is.na(payer_account_id),payer_account_id,account_id))
+  message("- Query succeed: CloudSearch credits and refund data retrieved.")
+  dbDisconnect(conn)
   
-  credits <- aggregate(credits$billed_amount, by = list(credits$account_id, credits$charge_item_desc), FUN = sum)
-  names(credits)[1] <- "account_id"
-  names(credits)[2] <- "charge_item_desc"
-  names(credits)[3] <- "billed_amount"
+  charge <- merge(charge, customerList, by=c("account_id"), all.x=TRUE)
+  charge <- within(charge, account_id <- ifelse(!is.na(payer_account_id),payer_account_id,account_id))
   
-  credits <- merge(credits, customerList, by=c("account_id"), all.x=TRUE)
+  refunds <- filter(charge, refunds < 0)
+  credits <- filter(charge, credits < 0)
   
-  credits <- credits[, c("account_id", "company", "charge_item_desc", "billed_amount")]
+  refunds <- aggregate(refunds ~ account_id + company + description, data = refunds, sum)
+  colnames(refunds)[which(names(refunds) == "refunds")] <- "billed_amount"
+  
+  credits <- aggregate(credits ~ account_id + company + description, data = credits, sum)
+  colnames(credits)[which(names(credits) == "credits")] <- "billed_amount"
   
   credits <- credits[order(credits$billed_amount), ]
   total_credits <- sum(credits$billed_amount)
-  credits <- head(credits, 15)
+  credits <- head(credits, 20)
   other_credits <- total_credits - sum(credits$billed_amount)
+  sum_row_credits <- data.frame(account_id = "",
+                                company = "other",
+                                charge_item_desc = "",
+                                billed_amount = other_credits)
+  sepRow <- data.frame(account_id = "----",
+                       company = "----",
+                       charge_item_desc = "----",
+                       billed_amount = 0)
   
-  sum_row <- data.frame(account_id = "",
-                        company = "other",
-                        charge_item_desc = "",
-                        billed_amount = other_credits)
+  refunds <- refunds[order(refunds$billed_amount), ]
+  total_refunds <- sum(refunds$billed_amount)
+  refunds <- head(refunds, 20)
+  other_refunds <- total_refunds - sum(refunds$billed_amount)
+  sum_row_refunds <- data.frame(account_id = "",
+                                company = "other",
+                                charge_item_desc = "",
+                                billed_amount = other_refunds)
   
-  credits <- bind_rows(credits, sum_row)
+  t <- bind_rows(credits, sum_row_credits, sepRow, refunds, sum_row_refunds)
   
   #write to weekly report
-  write.csv(credits, creditsFilePath, row.names = FALSE)
+  write.csv(t, creditsFilePath, row.names = FALSE)
   
-  return (credits)
+  return (t)
+  
+}
+
+calcCreditsAmount <- function(week, year) {
+  if (missing(week)) {
+    week = weeknum(weekDiff = -1)$week
+  }
+  
+  if (missing(year)) {
+    year = weeknum(weekDiff = -1)$year
+  }
+  
+  wdates <- weekDates(year = year, week = week)
+  
+  x <- data_frame(week = week)
+  
+  SQL <- paste0("select sum(credits) as credits, sum(refunds) as refunds from
+                (SELECT 
+                SUM(fct.billed_amount*amortization_factor) as credits,
+                SUM(fct.refund_amount*amortization_factor) as refunds
+                FROM   awsdw_dm_billing.fact_aws_daily_est_revenue_reporting fct, 
+                awsdw_dm_billing.dim_aws_products product
+                WHERE  
+                product.product_seq_id = fct.product_seq_id 
+                AND product.product_code = 'AmazonCloudSearch'       
+                AND fct.computation_date >= '", min(wdates), "'", 
+                "AND fct.computation_date <= '", max(wdates), "'", 
+                "GROUP  BY charge_item_desc
+                having  SUM(fct.billed_amount*amortization_factor) <0 or SUM(fct.refund_amount*amortization_factor) <0)")
+  
+  conn <- dbConnect(driver, url)
+  message("Getting CloudSearch credits and refund data. ")
+  t <- dbGetQuery(conn, SQL)
+  
+  message("- Query succeed: CloudSearch credits and refund data retrieved.")
+  dbDisconnect(conn)
+  
+  return (t)
   
 }
 

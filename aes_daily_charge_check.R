@@ -53,6 +53,16 @@ weeknum <- function(week, year, weekDiff) {
   return (x)
 }
 
+weekDates <- function(week, year) {
+  if (missing(week) || missing(year)) {
+    x <- weeknum(weekDiff = -1)
+    week <- x$week
+    year <- x$year
+  }
+  
+  return(as.Date(paste(year, week, c(1:6), sep="-"), "%Y-%U-%u")-1)
+}
+
 getLast7days <- function () {
   t <- c(1:7)
   d <- Sys.Date() -1
@@ -1168,44 +1178,70 @@ getSQLData <- function() {
   
   message("- Connected to DB.")
   
-  SQL <- paste("select c.account_id, max(d.registration_date), count(distinct c.offering_id) from awsdw_ods.o_aws_subscriptions c,
-       awsdw_dm_billing.dim_aws_accounts d
-               where c.account_id = d.account_id and
-               c.account_id not in
-               (select distinct account_id from awsdw_ods.o_aws_subscriptions
-               where offering_id in ('607997', '607996', '615324','615325','729920'))
-               
-               and c.account_id in 
-               (SELECT
-               b.account_id
-               FROM (SELECT
-               account_id, 
-               max(start_effective_date) AS start_effective_date
-               FROM awsdw_dm_billing.dim_aws_accounts
-               GROUP BY account_id) a
-               INNER JOIN awsdw_dm_billing.dim_aws_accounts b
-               ON b.account_id = a.account_id and b.start_effective_date = a.start_effective_date
-               
-               where b.account_status_code = 'Active')
-               
-               and c.account_id in
-               (SELECT DISTINCT acct_dim.account_id
-               FROM awsdw_dm_billing.fact_aws_weekly_est_revenue f
-               INNER JOIN  awsdw_dm_billing.DIM_AWS_ACTIVITY_TYPES DIM_ACT ON F.ACTIVITY_TYPE_ID = DIM_ACT.ACTIVITY_TYPE_ID
-               INNER JOIN  awsdw_dm_billing.DIM_EC2_ACCOUNTS acct_dim ON f.account_seq_id = acct_dim.account_seq_id
+  SQL <- paste("SELECT
+  fct.computation_date,
+               case WHEN charge_item_desc  LIKE 'AWS Activate%' or charge_item_desc  LIKE 'AWS Activae%'
+               THEN  'AWS Activate'
+               WHEN charge_item_desc  LIKE 'BDE_RET%'
+               THEN 'RE:Think'
+               WHEN charge_item_desc  LIKE '%re:Invent%'
+               THEN 'RE:Invent'
+               WHEN charge_item_desc  LIKE '%Enterprise Program Discount%' or charge_item_desc  LIKE '%AWS Enterprise Discount Program%'
+               THEN 'EDP'
+               WHEN charge_item_desc  LIKE 'Free Tier%'
+               THEN 'Free Tier'           
+               WHEN charge_item_desc  LIKE '%Promo%'
+               THEN 'Promotion'
+               WHEN charge_item_desc  LIKE '%Reseller Program%'
+               THEN 'Reseller Program'
+               WHEN charge_item_desc  LIKE 'RI %'
+               THEN 'RI Mismatch/Cancellation'
+               WHEN charge_item_desc  LIKE 'Private Pricing%'
+               THEN 'Private Deal'
+               when fct.billed_amount*amortization_factor <0 then 'credit'
+               when fct.refund_amount*amortization_factor <0 then 'refund'  end  as description,
+               fct.base_currency_code,
+               SUM(fct.billed_amount*amortization_factor) as credits,
+               SUM(fct.refund_amount*amortization_factor) as refunds
+               FROM
+               awsdw_dm_billing.fact_aws_daily_est_revenue_reporting fct
+               JOIN awsdw_dm_billing.dim_aws_products prd ON prd.product_seq_id = fct.product_seq_id 
                WHERE
-               DIM_ACT.BIZ_PRODUCT_GROUP = 'EC2'
-               AND DIM_ACT.BIZ_PRODUCT_NAME IN ('EC2 Instance Usage', 'EC2 RI Leases')  -- EC2 Box Usage and Rerservations
-               AND f.week_begin_date='2017-01-22'        -- Change the Week Begin Date
-               AND acct_dim.is_internal_flag='N'         -- External accounts only
-               AND acct_dim.is_fraud_flag='N'            -- Non Fraud accounts only
-               AND f.is_compromised_flag='N'             -- Non Compromised usage only
-               AND acct_dim.account_status_code='Active')
-               group by 1", sep="")
+               fct.computation_date >= '2017-01-21'
+               and fct.computation_date <= '2017-01-28'
+               --AND fct.revenue_type_id IN (112, 117) -- Anniversary and OCB Tax
+               --AND credit_id IS NOT NULL -- Credits
+               AND prd.product_code = 'AmazonES'
+               
+               GROUP BY
+               fct.computation_date
+               , case WHEN charge_item_desc  LIKE 'AWS Activate%' or charge_item_desc  LIKE 'AWS Activae%'
+               THEN  'AWS Activate'
+               WHEN charge_item_desc  LIKE 'BDE_RET%'
+               THEN 'RE:Think'
+               WHEN charge_item_desc  LIKE '%re:Invent%'
+               THEN 'RE:Invent'
+               WHEN charge_item_desc  LIKE '%Enterprise Program Discount%' or charge_item_desc  LIKE '%AWS Enterprise Discount Program%'
+               THEN 'EDP'
+               WHEN charge_item_desc  LIKE 'Free Tier%'
+               THEN 'Free Tier'           
+               WHEN charge_item_desc  LIKE '%Promo%'
+               THEN 'Promotion'
+               WHEN charge_item_desc  LIKE '%Reseller Program%'
+               THEN 'Reseller Program'
+               WHEN charge_item_desc  LIKE 'RI %'
+               THEN 'RI Mismatch/Cancellation'
+               WHEN charge_item_desc  LIKE 'Private Pricing%'
+               THEN 'Private Deal'
+               when fct.billed_amount*amortization_factor <0 then 'credit'
+               when fct.refund_amount*amortization_factor <0 then 'refund'
+               end
+               ,fct.base_currency_code
+               having  SUM(fct.billed_amount*amortization_factor) <0 or SUM(fct.refund_amount*amortization_factor) <0", sep="")
   
   message("- Running query: weekly usage data...")
   t <- dbGetQuery(conn, SQL)
-  t$account_id <- str_pad(as.character(t$account_id), 12, pad="0")
+  # t$account_id <- str_pad(as.character(t$account_id), 12, pad="0")
   message("- Query succeed: weekly usage data retrieved.")
   dbDisconnect(conn)
   
