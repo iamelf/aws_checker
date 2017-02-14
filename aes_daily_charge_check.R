@@ -8,7 +8,6 @@ library(elastic)
 library(stringr)
 library(shiny)
 library(reshape2)
-library(jsonlite)
 
 
 # !!! A9 cluster has been retired !!!
@@ -140,27 +139,36 @@ dailyUsageDiff <- function (dateStr) {
   d2 <- format(t, "%Y-%m-%d")
   dateStr <- d2
   
-  t1 <- getDailyCharge(d1)
-  t1 <- t1[t1$is_internal_flag=="N",]
-  t2 <- getDailyCharge(d2)
-  t2 <- t2[t2$is_internal_flag=="N",]
+  t1 <- getDailyMetering(d1)
+  #t1 <- t1[t1$is_internal_flag=="N",]
+  t2 <- getDailyMetering(d2)
+  #t2 <- t2[t2$is_internal_flag=="N",]
   
-  ag1 <- aggregate(t1$usage_value, by=list(t1$usage_type), FUN=sum)
-  ag2 <- aggregate(t2$usage_value, by=list(t2$usage_type), FUN=sum)
+  ag1 <- aggregate(usage_value ~ account_id+usage_resource+usage_type, data = t1, FUN=sum)
+  ag2 <- aggregate(usage_value ~ account_id+usage_resource+usage_type, data = t2, FUN=sum)
   
   
-  colnames(ag1)[1] <- "usage_type"
-  colnames(ag1)[2] <- "usage_yesterday"
-  colnames(ag2)[1] <- "usage_type"
-  colnames(ag2)[2] <- "usage_today"
+  colnames(ag1)[4] <- "usage_yesterday"
+  colnames(ag2)[4] <- "usage_today"
   
-  chrg <- merge(ag1, ag2, by="usage_type", all=TRUE)
+  chrg <- merge(ag1, ag2, by=c("usage_resource", "account_id", "usage_type"), all=TRUE)
   
   chrg[is.na(chrg)] <- 0
   
-  chrg[,"diff"] <- chrg["usage_today"] - chrg["usage_yesterday"]
+  chrg$diff <- chrg$usage_today - chrg$usage_yesterday
   chrg <- chrg[order(-chrg$diff),]
   chrg$date <- dateStr
+  
+  p <- getPricePlan(2)
+  p <- p[, c("Usage.Type", "Price.Unit")]
+  colnames(p)[1] <- "usage_type"
+  colnames(p)[2] <- "price"
+  chrg <- merge(chrg, p, by=c("usage_type"), all.x = T)
+  chrg$chargeDiff <- chrg$diff * chrg$price
+  
+  customerList <- getCustomerData()
+  chrg <- merge(chrg, customerList, by=c("account_id"), all.x=T)
+  chrg <- filter(chrg, !is.na(payer_account_id))
   
   return (chrg)
 }
@@ -288,13 +296,7 @@ getWeeklyCharges <- function(week, year) {
     t <- read.csv(fpath, sep=",")
     t$account_id <- str_pad(as.character(t$account_id), 12, pad="0")
   } else {
-    SQL <- paste("select account_id, 
-                 is_internal_flag, 
-                 billed_amount, 
-                 usage_type, 
-                 region, 
-                 credit_id,
-                 charge_item_desc
+    SQL <- paste("select *
                  from a9cs_metrics.es_weekly_charges
                  where year = '", year, "' AND week='", week,"'", sep="")
     conn <- dbConnect(driver, url)
@@ -374,118 +376,10 @@ getDailyCharge <- function(dateStr) {
     conn <- dbConnect(driver, url)
     message("- Connected to DB.")
     
-    sqldaily <- paste("SELECT fct.computation_date, 
-       opp.client_product_code, 
-                      fct.charge_item_desc, 
-                      acct.account_id, 
-                      pacct.payer_account_id                                 AS PAYER_ID, 
-                      fct.charge_period_start_date, 
-                      fct.charge_period_end_date, 
-                      product.product_code, 
-                      ut.usage_type, 
-                      sum(fct.usage_value * fct.amortization_factor)   AS usage_value, 
-                      opp.pricing_plan_id, 
-                      opp.offering_id, 
-                      opp.rate_id, 
-                      Sum(fct.billed_amount * fct.amortization_factor) AS billed_amount, 
-                      op.operation, 
-                      opp.price_per_unit,
-                      fct.credit_id,
-                      rm.region,
-                      acct.is_internal_flag 
-                      FROM   awsdw_dm_billing.fact_aws_daily_est_revenue_current fct, 
-                      awsdw_dm_billing.dim_aws_accounts acct, 
-                      awsdw_dm_billing.dim_aws_accounts pacct, 
-                      awsdw_dm_billing.dim_aws_offering_pricing_plans opp, 
-                      awsdw_dm_billing.dim_aws_usage_types ut, 
-                      awsdw_dm_billing.dim_aws_operations op, 
-                      a9cs_metrics.es_region_mapping rm,
-                      awsdw_dm_billing.dim_aws_products product
-                      WHERE  fct.account_seq_id = acct.account_seq_id 
-                      AND fct.payer_account_seq_id = pacct.account_seq_id 
-                      AND fct.offering_pricing_plan_seq_id = opp.offering_pricing_plan_seq_id 
-                      AND fct.usage_type_seq_id = ut.usage_type_seq_id 
-                      AND fct.operation_seq_id = op.operation_seq_id 
-                      AND fct.operation_seq_id = op.operation_seq_id 
-                      AND product.product_seq_id = fct.product_seq_id 
-                      AND product.product_code = 'AmazonES' 
-                      AND ut.usage_type = rm.usage_type        
-                      AND fct.computation_date = ('", dateStr,"') 
-                      GROUP  BY fct.computation_date, 
-                      opp.client_product_code, 
-                      fct.charge_item_desc, 
-                      acct.account_id, 
-                      pacct.payer_account_id,
-                      fct.charge_period_start_date, 
-                      fct.charge_period_end_date, 
-                      product.product_code, 
-                      ut.usage_type, 
-                      opp.pricing_plan_id, 
-                      opp.offering_id, 
-                      opp.rate_id, 
-                      op.operation, 
-                      opp.price_per_unit, 
-                      fct.credit_id,
-                      rm.region,
-                      acct.is_internal_flag 
-                      ORDER  BY acct.account_id ASC", sep="")
-    
-    
-    # sqldaily <- paste("SELECT fct.computation_date,
-    #    opp.client_product_code,
-    #                   fct.charge_item_desc,
-    #                   acct.account_id,
-    #                   pacct.payer_account_id                                 AS PAYER_ID,
-    #                   fct.charge_period_start_date,
-    #                   fct.charge_period_end_date,
-    #                   product.product_code,
-    #                   ut.usage_type,
-    #                   sum(fct.usage_value * fct.amortization_factor)   AS usage_value,
-    #                   opp.pricing_plan_id,
-    #                   opp.offering_id,
-    #                   opp.rate_id,
-    #                   Sum(fct.billed_amount * fct.amortization_factor) AS billed_amount,
-    #                   op.operation,
-    #                   opp.price_per_unit,
-    #                   fct.credit_id,
-    #                   rm.region,
-    #                   acct.is_internal_flag
-    #                   FROM   fact_aws_daily_est_revenue_current fct,
-    #                   dim_aws_accounts acct,
-    #                   dim_aws_accounts pacct,
-    #                   dim_aws_offering_pricing_plans opp,
-    #                   dim_aws_usage_types ut,
-    #                   dim_aws_operations op,
-    #                   es_region_mapping rm,
-    #                   dim_aws_products product
-    #                   WHERE  fct.account_seq_id = acct.account_seq_id
-    #                   AND fct.payer_account_seq_id = pacct.account_seq_id
-    #                   AND fct.offering_pricing_plan_seq_id = opp.offering_pricing_plan_seq_id
-    #                   AND fct.usage_type_seq_id = ut.usage_type_seq_id
-    #                   AND fct.operation_seq_id = op.operation_seq_id
-    #                   AND fct.operation_seq_id = op.operation_seq_id
-    #                   AND product.product_seq_id = fct.product_seq_id
-    #                   AND product.product_code = 'AmazonES'
-    #                   AND ut.usage_type = rm.usage_type
-    #                   AND fct.computation_date = ('", dateStr,"')
-    #                   GROUP  BY fct.computation_date,
-    #                   opp.client_product_code,
-    #                   fct.charge_item_desc,
-    #                   acct.account_id,
-    #                   pacct.payer_account_id,
-    #                   fct.charge_period_start_date,
-    #                   fct.charge_period_end_date,
-    #                   product.product_code,
-    #                   ut.usage_type,
-    #                   opp.pricing_plan_id,
-    #                   opp.offering_id,
-    #                   opp.rate_id,
-    #                   op.operation,
-    #                   opp.price_per_unit,
-    #                   fct.credit_id,
-    #                   rm.region,
-    #                   acct.is_internal_flag
-    #                   ORDER  BY acct.account_id ASC", sep="")
+    sqldaily <- paste("select computation_date,charge_item_desc,account_id,payer_id as payer_account_id,
+                      usage_type, usage_value, offering_id, billed_amount, price_per_unit, region, is_internal_flag 
+                      from a9cs_metrics.es_daily_charges
+                      where computation_date = '",dateStr,"'", sep="")
 
 
     message("- Running query: daily revenue data...")
@@ -594,21 +488,14 @@ getRegion <- function(dateStr) {
 
 initializeES <- function () {
   
-  #esBase <- "https://search-testkibana-6cicgmffkxcr6qbgwbu7jgplo4.us-west-1.es.amazonaws.com"
-  #esBase <- "https://search-testkibana-zl2kau6porzgk7jv3g26tigus4.sa-east-1.es.amazonaws.com"
-  #esBase <- "https://search-maggietest-xxsbuyd663jbcikgukmxueetba.us-east-1.es-integ.amazonaws.com"
-  #esPort <- 443
-  
-  esBase <- "http://10.49.45.188"
-  esBase <- "http://127.0.0.1"
-  #esBase <- "http://admin:awsrocks@10.49.32.92"
+  esHost <- "http://127.0.0.1"
   esPort <- 9200
   
   
   esUser <- NULL
   esPwd <- NULL
   
-  connect(es_base = esBase, es_port = esPort, es_user=esUser, es_pwd = esPwd)
+  connect(es_host = esHost, es_port = esPort, es_user=esUser, es_pwd = esPwd)
   
 }
 
@@ -649,6 +536,7 @@ loadDaily2ES <- function(dateStr, nDay=1) {
               "payer_id" : {"type" : "string", "index":  "not_analyzed"},
               "product_code" : {"type" : "string", "index":  "not_analyzed"},
               "usage_type" : {"type" : "string", "index":  "not_analyzed"},
+              "usage_value" : {"type" : "float", "index":  "not_analyzed"},
               "pricing_plan_id" : {"type" : "string", "index":  "not_analyzed"},
               "offering_id" : {"type" : "string", "index":  "not_analyzed"},
               "rate_id" : {"type" : "string", "index":  "not_analyzed"},
@@ -666,111 +554,135 @@ loadDaily2ES <- function(dateStr, nDay=1) {
       message("Index ", indexName, " loading complete!")
     }
     
-    indexName <- paste("account-charge-", dateStr,sep="")
-    
-    if (index_exists(indexName)) {
-      message("Index ", indexName, " already exists. Skip loading.")
-    } else {
-      message("Loading index ", indexName, " into Elasticsearch...")
-      dt <- getAccountCharge(dateStr)
-      # create index with mapping
-      body <- paste('{
-        "settings" : {
-          "number_of_shards" : 1
-        },
-        "mappings": {
-          "', indexName, '": {
-            "properties": {
-              "account_id" : {"type" : "string", "index":  "not_analyzed"},
-              "company" : {"type" : "string", "index":  "not_analyzed"}
-            }
-          }
-        }
-      }', sep="")
-      index_create(indexName, body=body)      
-      docs_bulk(dt, indexName)
-      message("Index ", indexName, " loading complete!")
-    }
-    
-    indexName <- paste("gainer-", dateStr,sep="")
-    
-    if (index_exists(indexName)) {
-      message("Index ", indexName, " already exists. Skip loading.")
-    } else {
-      message("Loading index ", indexName, " into Elasticsearch...")
-      dt <- dailyGainer(dateStr)
-      # create index with mapping
-      body <- paste('{
-                    "settings" : {
-                    "number_of_shards" : 1
-                    },
-                    "mappings": {
-                    "', indexName, '": {
-                    "properties": {
-                    "account_id" : {"type" : "string", "index":  "not_analyzed"},
-                    "company" : {"type" : "string", "index":  "not_analyzed"}
-                    }
-                    }
-                    }
-                }', sep="")
-      index_create(indexName, body=body)      
-      docs_bulk(dt, indexName)
-      message("Index ", indexName, " loading complete!")
-    }
-    
-    indexName <- paste("usage-diff-", dateStr,sep="")
-    
-    if (index_exists(indexName)) {
-      message("Index ", indexName, " already exists. Skip loading.")
-    } else {
-      message("Loading index ", indexName, " into Elasticsearch...")
-      dt <- dailyUsageDiff(dateStr)
-      # create index with mapping
-      body <- paste('{
-                    "settings" : {
-                    "number_of_shards" : 1
-                    },
-                    "mappings": {
-                    "', indexName, '": {
-                    "properties": {
-                    "usage_type" : {"type" : "string", "index":  "not_analyzed"}
-                    }
-                    }
-                    }
-    }', sep="")
-      index_create(indexName, body=body)      
-      docs_bulk(dt, indexName)
-      message("Index ", indexName, " loading complete!")
-    }
-    
-    indexName <- paste("usage-charge-diff-", dateStr,sep="")
-    
-    if (index_exists(indexName)) {
-      message("Index ", indexName, " already exists. Skip loading.")
-    } else {
-      message("Loading index ", indexName, " into Elasticsearch...")
-      dt <- dailyUsageChargeDiff(dateStr)
-      # create index with mapping
-      body <- paste('{
-                    "settings" : {
-                    "number_of_shards" : 1
-                    },
-                    "mappings": {
-                    "', indexName, '": {
-                    "properties": {
-                    "usage_type" : {"type" : "string", "index":  "not_analyzed"}
-                    }
-                    }
-                    }
-    }', sep="")
-      index_create(indexName, body=body)      
-      docs_bulk(dt, indexName)
-      message("Index ", indexName, " loading complete!")
-    }
+    # indexName <- paste("account-charge-", dateStr,sep="")
+    # 
+    # if (index_exists(indexName)) {
+    #   message("Index ", indexName, " already exists. Skip loading.")
+    # } else {
+    #   message("Loading index ", indexName, " into Elasticsearch...")
+    #   dt <- getAccountCharge(dateStr)
+    #   # create index with mapping
+    #   body <- paste('{
+    #     "settings" : {
+    #       "number_of_shards" : 1
+    #     },
+    #     "mappings": {
+    #       "', indexName, '": {
+    #         "properties": {
+    #           "account_id" : {"type" : "string", "index":  "not_analyzed"},
+    #           "company" : {"type" : "string", "index":  "not_analyzed"}
+    #         }
+    #       }
+    #     }
+    #   }', sep="")
+    #   index_create(indexName, body=body)      
+    #   docs_bulk(dt, indexName)
+    #   message("Index ", indexName, " loading complete!")
+    # }
+    # 
+    # indexName <- paste("gainer-", dateStr,sep="")
+    # 
+    # if (index_exists(indexName)) {
+    #   message("Index ", indexName, " already exists. Skip loading.")
+    # } else {
+    #   message("Loading index ", indexName, " into Elasticsearch...")
+    #   dt <- dailyGainer(dateStr)
+    #   # create index with mapping
+    #   body <- paste('{
+    #                 "settings" : {
+    #                 "number_of_shards" : 1
+    #                 },
+    #                 "mappings": {
+    #                 "', indexName, '": {
+    #                 "properties": {
+    #                 "account_id" : {"type" : "string", "index":  "not_analyzed"},
+    #                 "company" : {"type" : "string", "index":  "not_analyzed"}
+    #                 }
+    #                 }
+    #                 }
+    #             }', sep="")
+    #   index_create(indexName, body=body)      
+    #   docs_bulk(dt, indexName)
+    #   message("Index ", indexName, " loading complete!")
+    # }
+    # 
+    # indexName <- paste("usage-diff-", dateStr,sep="")
+    # 
+    # if (index_exists(indexName)) {
+    #   message("Index ", indexName, " already exists. Skip loading.")
+    # } else {
+    #   message("Loading index ", indexName, " into Elasticsearch...")
+    #   dt <- dailyUsageDiff(dateStr)
+    #   # create index with mapping
+    #   body <- paste('{
+    #                 "settings" : {
+    #                 "number_of_shards" : 1
+    #                 },
+    #                 "mappings": {
+    #                 "', indexName, '": {
+    #                 "properties": {
+    #                 "usage_type" : {"type" : "string", "index":  "not_analyzed"}
+    #                 }
+    #                 }
+    #                 }
+    # }', sep="")
+    #   index_create(indexName, body=body)      
+    #   docs_bulk(dt, indexName)
+    #   message("Index ", indexName, " loading complete!")
+    # }
+    # 
+    # indexName <- paste("usage-charge-diff-", dateStr,sep="")
+    # 
+    # if (index_exists(indexName)) {
+    #   message("Index ", indexName, " already exists. Skip loading.")
+    # } else {
+    #   message("Loading index ", indexName, " into Elasticsearch...")
+    #   dt <- dailyUsageChargeDiff(dateStr)
+    #   # create index with mapping
+    #   body <- paste('{
+    #                 "settings" : {
+    #                 "number_of_shards" : 1
+    #                 },
+    #                 "mappings": {
+    #                 "', indexName, '": {
+    #                 "properties": {
+    #                 "usage_type" : {"type" : "string", "index":  "not_analyzed"}
+    #                 }
+    #                 }
+    #                 }
+    # }', sep="")
+    #   index_create(indexName, body=body)      
+    #   docs_bulk(dt, indexName)
+    #   message("Index ", indexName, " loading complete!")
+    # }
     
   }
 }
 
+translateRegion <- function (alias) {
+  if (missing(alias)) {
+    message("Please pass in a region alias!")
+    return (-1)
+  }
+  regions <- data.frame(location = c("", "USW2","USW1", "EU", "APN1", "APS1", "APS2",	"APS3", "SAE1", "EUC1", "APN2", "USE2"),
+                        airport = c("IAD","PDX","SFO","DUB", "NRT", "SIN", "SYD", "BOM", "GRU", "FRA", "ICN", "CMH"))
+  
+  z <- NULL
+  for (i in alias) {
+    x <- regions[regions$location == i, ]
+    y <- as.character(x$airport)
+    if (nrow(x) == 0) {
+      x <- regions[regions$airport == i, ]
+      if (nrow(x) == 0) {
+        y <- "IAD"   # When couldn't find a region, set it to default as IAD
+      } else {
+        y <- as.character(x$location)
+      }
+    }
+    z <- c(z, y)
+  }
+  return (z)
+}
 
 getCustomerData <- function () {
   
@@ -792,29 +704,17 @@ getCustomerData <- function () {
     conn <- dbConnect(driver, url)
     message("- Connected to DB.")
     
-    # SQL <- "WITH account
-    # AS (SELECT DISTINCT account_id, payer_account_id, is_internal_flag
-    # FROM   dim_aws_accounts
-    # WHERE  end_effective_date IS NULL
-    # AND    current_record_flag = 'Y')   -- tt33060829 dupe stop
-    # SELECT aa.account_id,
-    # coalesce(bb.account_field_value, 'e-mail Domain:'
-    # || aa.email_domain) AS company,
-    # aa.clear_name name,
-    # aa.clear_lower_email email,
-    # account.is_internal_flag,
-    # account.payer_account_id
-    # FROM   t_customers aa
-    # left outer join o_aws_account_field_values bb
-    # ON ( aa.account_id = bb.account_id
-    # AND bb.account_field_id = 2 )
-    # left outer join account
-    # ON ( account.account_id = aa.account_id ) WHERE  aa.account_id IN (SELECT DISTINCT account_id
-    # FROM   o_aws_subscriptions
-    # -- WHERE  offering_id IN ( '26555', '113438', '128046' )
-    # WHERE  offering_id IN ('607996', '607997', '615324', '615325', '729920' )
-    # AND ( end_date IS NULL
-    # OR end_date >= ( SYSDATE - 9 )));"
+    SQL <- "select account_id, 
+    payer_account_id, 
+    internal, 
+    company_name as account_name,
+    (select company_name from account_dm 
+    where account_dm.account_id = k.payer_account_id ) as payer_name
+    from
+    (select distinct k.account_id,a.payer_account_id,a.company_name,a.internal
+    from a9cs_metrics.es_weekly_metering k join account_dm a 
+    on a.account_id = k.account_id) k"
+    
     
     SQL <- "select account_id, 
     payer_account_id, 
@@ -830,7 +730,7 @@ getCustomerData <- function () {
     message("- Running query: customer data...")
     t <- dbGetQuery(conn, SQL)
     message("- Query succeed: customer data retrieved.")
-    dbDisconnect(conn)
+    
     t$account_id <- str_pad(t$account_id, 12, pad="0")
     t$payer_account_id <- str_pad(t$payer_account_id, 12, pad="0")
     t$is_internal_flag <- ifelse(t$internal == "external", "N", "Y")
@@ -848,6 +748,19 @@ getCustomerData <- function () {
     
     t <- unique(rbind(dt_child, dt_payer))
     
+    
+    
+    
+    w <- weeknum(weekDiff = -1)
+    SQL <- paste("select distinct account_id, is_internal_flag, offering_id
+                 from a9cs_metrics.es_weekly_charges
+                 where year = ", w$year, " and week = ", w$week ,
+                 "and offering_id in ('607996','615324','729920', '615325', '607997', '631467')", sep="")
+    x <- dbGetQuery(conn, SQL)
+    
+    t <- merge(t, x, all.x = T)
+    
+    dbDisconnect(conn)
     
     write.csv(t, fpath, row.names = F)
     message("Customer data saved to file: ", fpath)
@@ -999,7 +912,7 @@ getCustomerCharge <- function(account_id) {
   }
   
   all_accounts <- filter(customerList, payer_account_id == payer)$account_id
-  
+  all_accounts <- c(account_id, all_accounts)
   
   
   queryStr <- paste("'", all_accounts[1], "'", sep = "")
@@ -1013,7 +926,7 @@ getCustomerCharge <- function(account_id) {
   message("- Connected to DB.")
   
   SQL <- paste("select * from a9cs_metrics.es_daily_charges
-            where computation_date >= '2016-01-01' 
+            where computation_date >= '2016-10-01' 
               and account_id in (", queryStr,")", sep = "")
   
   message("- Running query: weekly usage data...")
@@ -1178,66 +1091,10 @@ getSQLData <- function() {
   
   message("- Connected to DB.")
   
-  SQL <- paste("SELECT
-  fct.computation_date,
-               case WHEN charge_item_desc  LIKE 'AWS Activate%' or charge_item_desc  LIKE 'AWS Activae%'
-               THEN  'AWS Activate'
-               WHEN charge_item_desc  LIKE 'BDE_RET%'
-               THEN 'RE:Think'
-               WHEN charge_item_desc  LIKE '%re:Invent%'
-               THEN 'RE:Invent'
-               WHEN charge_item_desc  LIKE '%Enterprise Program Discount%' or charge_item_desc  LIKE '%AWS Enterprise Discount Program%'
-               THEN 'EDP'
-               WHEN charge_item_desc  LIKE 'Free Tier%'
-               THEN 'Free Tier'           
-               WHEN charge_item_desc  LIKE '%Promo%'
-               THEN 'Promotion'
-               WHEN charge_item_desc  LIKE '%Reseller Program%'
-               THEN 'Reseller Program'
-               WHEN charge_item_desc  LIKE 'RI %'
-               THEN 'RI Mismatch/Cancellation'
-               WHEN charge_item_desc  LIKE 'Private Pricing%'
-               THEN 'Private Deal'
-               when fct.billed_amount*amortization_factor <0 then 'credit'
-               when fct.refund_amount*amortization_factor <0 then 'refund'  end  as description,
-               fct.base_currency_code,
-               SUM(fct.billed_amount*amortization_factor) as credits,
-               SUM(fct.refund_amount*amortization_factor) as refunds
-               FROM
-               awsdw_dm_billing.fact_aws_daily_est_revenue_reporting fct
-               JOIN awsdw_dm_billing.dim_aws_products prd ON prd.product_seq_id = fct.product_seq_id 
-               WHERE
-               fct.computation_date >= '2017-01-21'
-               and fct.computation_date <= '2017-01-28'
-               --AND fct.revenue_type_id IN (112, 117) -- Anniversary and OCB Tax
-               --AND credit_id IS NOT NULL -- Credits
-               AND prd.product_code = 'AmazonES'
-               
-               GROUP BY
-               fct.computation_date
-               , case WHEN charge_item_desc  LIKE 'AWS Activate%' or charge_item_desc  LIKE 'AWS Activae%'
-               THEN  'AWS Activate'
-               WHEN charge_item_desc  LIKE 'BDE_RET%'
-               THEN 'RE:Think'
-               WHEN charge_item_desc  LIKE '%re:Invent%'
-               THEN 'RE:Invent'
-               WHEN charge_item_desc  LIKE '%Enterprise Program Discount%' or charge_item_desc  LIKE '%AWS Enterprise Discount Program%'
-               THEN 'EDP'
-               WHEN charge_item_desc  LIKE 'Free Tier%'
-               THEN 'Free Tier'           
-               WHEN charge_item_desc  LIKE '%Promo%'
-               THEN 'Promotion'
-               WHEN charge_item_desc  LIKE '%Reseller Program%'
-               THEN 'Reseller Program'
-               WHEN charge_item_desc  LIKE 'RI %'
-               THEN 'RI Mismatch/Cancellation'
-               WHEN charge_item_desc  LIKE 'Private Pricing%'
-               THEN 'Private Deal'
-               when fct.billed_amount*amortization_factor <0 then 'credit'
-               when fct.refund_amount*amortization_factor <0 then 'refund'
-               end
-               ,fct.base_currency_code
-               having  SUM(fct.billed_amount*amortization_factor) <0 or SUM(fct.refund_amount*amortization_factor) <0", sep="")
+  SQL <- paste("select distinct account_id, is_internal_flag, offering_id
+                 from a9cs_metrics.es_weekly_charges
+               where year = 2017 and week = 5
+               and offering_id in ('607996','615324','729920', '615325', '607997', '631467')", sep="")
   
   message("- Running query: weekly usage data...")
   t <- dbGetQuery(conn, SQL)
@@ -1781,9 +1638,234 @@ generateESPriceList <- function() {
   instanceList <- filter(instanceList, !Usage.Type %in% currentProduct$usageType)
 }
 
+calcCredits <- function(week, year) {
+  if (missing(week)) {
+    week = weeknum(weekDiff = -1)$week
+  }
+  
+  if (missing(year)) {
+    year = weeknum(weekDiff = -1)$year
+  }
+  
+  wdates <- weekDates(year = year, week = week)
+  
+  SQL <- paste0("SELECT acct.account_id,
+               charge_item_desc as description,
+                SUM(fct.billed_amount*amortization_factor) as credits,
+                SUM(fct.refund_amount*amortization_factor) as refunds
+                
+                FROM   awsdw_dm_billing.fact_aws_daily_est_revenue_reporting fct, 
+                awsdw_dm_billing.dim_aws_accounts acct, 
+                awsdw_dm_billing.dim_aws_products product
+                WHERE  fct.account_seq_id = acct.account_seq_id 
+                AND product.product_seq_id = fct.product_seq_id 
+                AND product.product_code = 'AmazonRDS'       
+                AND fct.computation_date >= '", min(wdates), "'", 
+                "AND fct.computation_date <= '", max(wdates), "'", 
+                "GROUP  BY fct.computation_date, 
+                fct.charge_item_desc, 
+                acct.account_id,
+                fct.charge_period_start_date, 
+                fct.charge_period_end_date, 
+                product.product_code,
+                fct.credit_id,
+                charge_item_desc,
+                fct.base_currency_code
+                having  SUM(fct.billed_amount*amortization_factor) <0 or SUM(fct.refund_amount*amortization_factor) <0")
+  
+  conn <- dbConnect(driver, url)
+  message("Getting AES credits and refund data. ")
+  charge <- dbGetQuery(conn, SQL)
+  
+  message("- Query succeed: AES credits and refund data retrieved.")
+  dbDisconnect(conn)
+  
+  charge <- merge(charge, customerList, by=c("account_id"), all.x=T)
+  charge$account <- ifelse(is.na(charge$payer_account_id), charge$account_id, charge$payer_account_id)
+  
+  refunds <- filter(charge, refunds < 0)
+  credits <- filter(charge, credits < 0)
+  edp <- filter(refunds, grepl("enterprise|Enterprise", description))
+  edp <- filter(edp, grepl("discount|Discount", description))
+
+  t <- data.frame(credits_amount = sum(credits$credits),
+                  credits_accounts = length(unique(credits$account)),
+                  refunds_amount = sum(refunds$refunds),
+                  refunds_accounts = length(unique(refunds$account)),
+                  edp_amount = sum(edp$refunds),
+                  edp_accounts = length(unique(edp$account)))
+  return (t)
+}
+
+getCreditsHistory <- function(week, year, nWeek) {
+  if (missing(nWeek)) {
+    nWeek = 10
+  }
+  
+  if (missing(week)) {
+    week = weeknum()$week
+  }
+  if (missing(year)) {
+    year = weeknum()$year
+  }
+  filename <- "credits_history_rds.csv"
+  
+  if(file.exists(filename)) {
+    history <- read.csv(filename)
+  } else {
+    history <- data.frame()
+  }
+    
+  for (i in c(1:nWeek)) {
+    dt <- weeknum(week = week, year = year, weekDiff = -1*i)
+   
+    x<-calcCredits(week = dt$week, year=dt$year)
+    x$week <- dt$week
+    x$year <- dt$year
+    
+    history <- rbind(x, history)
+    history <- unique(history)
+    write.csv(history, filename, row.names = F)
+  }
+  
+  return (history)
+}
 
 
+newDomainType <- function(nWeek) {
+  if (missing(nWeek)) {
+    nWeek = 8
+  }
+  
+  x <- data.frame()
+  for (i in c(nWeek:1)) {
+    w1  <- weeknum(weekDiff = (-1*i))
+    w2  <- weeknum(weekDiff = (-1*i - 1))
+    
+    meter1 <- getWeeklyMetering(week = w1$week, year = w1$year)
+    meter2 <- getWeeklyMetering(week = w2$week, year = w2$year)
+    
+    newDomain <- filter(meter1, !meter1$usage_resource %in% meter2$usage_resource)
+    message("Totally ", length(unique(newDomain$usage_resource)), " was created for week ", w1$week)
+    newDomain <- unique(newDomain[, c("usage_resource", "usage_type")])
+    newDomain <- transform(newDomain, tmp=colsplit(newDomain$usage_type, ":", names=c("1","2")))
+    colnames(newDomain)[which(names(newDomain) == "tmp.2")] <- "instance_type"
+    
+    ag <- aggregate(usage_resource ~ instance_type, data = newDomain, FUN = length)
+    cname <- paste0("domain_count_week", w1$week)
+    t <- ag$usage_resource
+    colnames(ag)[which(names(ag) == "usage_resource")] <- cname
+    ag <- ag[, c("instance_type", cname)]
+    
+    t <- t / sum(t)
+    ag$tmp <- t
+    colnames(ag)[which(names(ag) == "tmp")] <- paste0("pct_", w1$week)
+    
+    if (is.null(x$instance_type)) {
+      x <- ag
+    } else {
+      x <- merge(x, ag, by = c("instance_type"), all.x = T)
+    }
+    write.csv(x, "domainCount_vs_instanceType.csv")
+  }
+  
+  write.csv(x, "domainCount_vs_instanceType.csv")
+  return (x)
+}
 
+readDomainConfig <- function() {
+  fname <- "/Users/maghuang/aws/domain_config/SFO-all-domains"
+  l <- scan(fname, what = "", sep = "\n")
+  txt <- paste(l, collapse = ",")
+  txt <- paste("[", txt, "]", sep = "")
+  config <- fromJSON(txt)
+}
+
+newDomainRevenue <- function() {
+  meter <- getWeeklyMetering()
+  lastWeek <- weeknum(weekDiff = -2)
+  
+  meterLast <- getWeeklyMetering(year = lastWeek$year, week = lastWeek$week)
+  
+  newDomains <- filter(meter, !meter$usage_resource %in% meterLast$usage_resource)
+  
+  price <- getPricePlan(2)
+  
+  rev <- getWeeklyCharges()
+  lastRev <- getWeeklyCharges(year = lastWeek$year, week = lastWeek$week)
+  
+  
+  
+  
+  return(newDomains)
+  
+}
+
+domainConfig <- function () {
+  conf <- readDomainConfig()
+  
+  customerList <- getCustomerData()
+  price <- getPricePlan(2)
+  price <- price[, c("Usage.Type", "Price.Unit")]
+  
+  conf <- merge(conf, customerList, by.x = "client_id", by.y="account_id", all.X = T)
+  
+  
+  conf$data_node_usage_type <- paste0("ESInstance:", conf$data_node_type)
+  conf <- merge(conf, price, by.x="data_node_usage_type", by.y = "Usage.Type")
+  
+  conf <- transform(conf, tmp=colsplit(conf$data_node_count, "x ", names=c("1","2")))
+  conf$data_node_count <- conf$tmp.1
+  
+  conf$cost <- conf$Price.Unit * 24 * conf$data_node_count
+  return (conf)
+  
+  
+  # docs_bulk(conf, "sfo_domains")
+  
+}
+
+
+trackFreeTierCost <- function(nDay) {
+  
+  price <- getPricePlan(2)
+  
+  price <- price[,c("Usage.Type", "Price.Unit")]
+  names(price)[1] <- "usage_type"
+  names(price)[2] <- "original_price"
+  price$cost <- price$original_price / 1.4
+  
+  res <- data.frame()
+  
+  for (i in c(nDay:1)) {
+    idx <- nDay - i + 1
+    dateStr <- format(Sys.Date()-i, "%Y-%m-%d")
+    rec <- data.frame(charge_date = dateStr)
+    
+    t <- getDailyCharge(dateStr)
+    
+    t <- filter(t, is_internal_flag == "N")
+    t <- filter(t, offering_id=="607996" | offering_id=="615324")
+    
+    t2small <- filter(t, grepl("t2.small", usage_type))
+    t2small <- merge(t2small, price, by="usage_type", all.x=T)
+    t2small_free <- filter(t2small, price_per_unit == 0)
+    
+    
+    t2micro <- filter(t, grepl("t2.micro", usage_type))
+    t2micro <- merge(t2micro, price, by="usage_type", all.x=T)
+    t2micro_free <- filter(t2micro, price_per_unit == 0)
+    
+    rec$t2.small.bill <- sum(t2small$billed_amount)
+    rec$t2.micro.bill <- sum(t2micro$billed_amount)
+    rec$t2.small.cost <- sum(t2small_free$usage_value * t2small_free$cost)
+    rec$t2.micro.cost <- sum(t2micro_free$usage_value * t2micro_free$cost)
+
+    res <- rbind(res, rec)
+  }
+  return(res)
+  
+}
 
 
 

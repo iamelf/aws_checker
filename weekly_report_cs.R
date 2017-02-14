@@ -118,15 +118,50 @@ main <- function(week, year) {
     qwikLabsAccount <<- getQwikLabsAccounts()
   }
   
-  wk <- str_pad(week, 2, pad="0")
-  # reportFile <- paste("CloudSearch-metrics-week", wk, ".xlsx", sep = "")
+  #wk <- str_pad(week, 2, pad="0")
+  reportFile <- paste("CloudSearch-metrics-week", week, ".xlsx", sep = "")
   
   # set path
-  # reportPath <<- file.path(outputPath, reportFile)
+  reportPath <<- file.path(outputPath, reportFile)
   
-  # if(file.exists(reportPath)) {
-  #   file.remove(reportPath)
-  # }
+  lastWk <- weeknum(weekDiff = -2) 
+  lastWkPath <- file.path(dataPath, paste("week", lastWk$week, sep=""))
+  lastWkPath <- file.path(lastWkPath, "CloudSearch")
+  
+  if(!file.exists(reportPath)) {
+    # copy file from last week to this week
+    lastReportFile <- paste("CloudSearch-metrics-week", lastWk$week, ".xlsx", sep = "")
+    lastReportPath <- file.path(lastWkPath, lastReportFile)
+    file.copy(lastReportPath, reportPath)
+  }
+  
+  wbrPath <- file.path(outputPath, "615-CloudSearch.docx")
+  
+  if(!file.exists(wbrPath)) {
+    # copy file from last week to this week
+    lastWBRPath <- file.path(lastWkPath, "615-CloudSearch.docx")
+    file.copy(lastWBRPath, wbrPath)
+  }
+  
+  
+  
+  pdfPath <- file.path(outputPath, "615-CloudSearch.pdf")
+  if (!file.exists(pdfPath)) {
+    write.csv(pdfPath, pdfPath)
+  }
+  
+  wd <- weekDates(week = week, year = year)
+  pdfName <- paste0("Week ", max(wd), " - Amazon CloudSearch Metrics.pdf")
+  pdfPath <- file.path(outputPath, pdfName)
+  if (!file.exists(pdfPath)) {
+    write.csv(pdfPath, pdfPath)
+  }
+  
+  pdfName <- paste0("Week ", max(wd), " - CloudSearch New and Dropped Customers.pdf")
+  pdfPath <- file.path(outputPath, pdfName)
+  if (!file.exists(pdfPath)) {
+    write.csv(pdfPath, pdfPath)
+  }
   
   #file.copy(reportTemplatePath, reportPath)
   
@@ -945,33 +980,22 @@ countEC2 <- function(week, year) {
   }
   
   conn <- dbConnect(driver, url)
-  
+  w <- weeknum(weekDiff = -2)
+  wdates <- weekDates(week = w$week, year = w$year)
   # Get EC2 developer count
-  # SQL <- paste("SELECT DISTINCT acct_dim.account_id
-  #              FROM a9cs_metrics.fact_aws_weekly_est_revenue f
-  #              INNER JOIN a9cs_metrics.DIM_AWS_ACTIVITY_TYPES DIM_ACT ON F.ACTIVITY_TYPE_ID = DIM_ACT.ACTIVITY_TYPE_ID
-  #              INNER JOIN a9cs_metrics.DIM_EC2_ACCOUNTS acct_dim ON f.account_seq_id = acct_dim.account_seq_id
-  #              WHERE
-  #              DIM_ACT.BIZ_PRODUCT_GROUP = 'EC2'
-  #              AND DIM_ACT.BIZ_PRODUCT_NAME IN ('EC2 Instance Usage', 'EC2 RI Leases')  -- EC2 Box Usage and Rerservations
-  #              AND f.week_begin_date='2015-05-24'        -- Change the Week Begin Date
-  #              AND acct_dim.is_internal_flag='N'         -- External accounts only
-  #              AND acct_dim.is_fraud_flag='N'            -- Non Fraud accounts only
-  #              AND f.is_compromised_flag='N'             -- Non Compromised usage only
-  #              AND acct_dim.account_status_code='Active' -- taking Active instead of Non-Suspended, as we have N/A and Dev Token", sep = "")
-  # 
   SQL <- paste("SELECT DISTINCT acct_dim.account_id
-              FROM awsdw_dm_billing.fact_aws_weekly_est_revenue f
-              INNER JOIN  awsdw_dm_billing.DIM_AWS_ACTIVITY_TYPES DIM_ACT ON F.ACTIVITY_TYPE_ID = DIM_ACT.ACTIVITY_TYPE_ID
-              INNER JOIN  awsdw_dm_billing.DIM_EC2_ACCOUNTS acct_dim ON f.account_seq_id = acct_dim.account_seq_id
-              WHERE
-              DIM_ACT.BIZ_PRODUCT_GROUP = 'EC2'
-              AND DIM_ACT.BIZ_PRODUCT_NAME IN ('EC2 Instance Usage', 'EC2 RI Leases')  -- EC2 Box Usage and Rerservations
-              AND f.week_begin_date='2015-05-24'        -- Change the Week Begin Date
-              AND acct_dim.is_internal_flag='N'         -- External accounts only
-              AND acct_dim.is_fraud_flag='N'            -- Non Fraud accounts only
-              AND f.is_compromised_flag='N'             -- Non Compromised usage only
-              AND acct_dim.account_status_code='Active'", sep = "")
+               FROM awsdw_dm_billing.fact_aws_weekly_est_revenue f
+               INNER JOIN  awsdw_dm_billing.DIM_AWS_ACTIVITY_TYPES DIM_ACT ON F.ACTIVITY_TYPE_ID = DIM_ACT.ACTIVITY_TYPE_ID
+               INNER JOIN  awsdw_dm_billing.DIM_EC2_ACCOUNTS acct_dim ON f.account_seq_id = acct_dim.account_seq_id
+               WHERE
+               DIM_ACT.BIZ_PRODUCT_GROUP = 'EC2'
+               AND DIM_ACT.BIZ_PRODUCT_NAME IN ('EC2 Instance Usage', 'EC2 RI Leases')  -- EC2 Box Usage and Rerservations
+               AND f.week_begin_date>='", min(wdates),"'        -- Change the Week Begin Date
+               AND f.week_begin_date <= '", max(wdates), "'
+               AND acct_dim.is_internal_flag='N'         -- External accounts only
+               AND acct_dim.is_fraud_flag='N'            -- Non Fraud accounts only
+               AND f.is_compromised_flag='N'             -- Non Compromised usage only
+               AND acct_dim.account_status_code='Active'", sep = "")
   
   message("Getting EC2 developer count. ")
   ec2_accounts <- dbGetQuery(conn, SQL)

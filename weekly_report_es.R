@@ -958,7 +958,8 @@ countEC2 <- function(week, year) {
   }
   
   conn <- dbConnect(driver, url)
-  
+  w <- weeknum(weekDiff = -2)
+  wdates <- weekDates(week = w$week, year = w$year)
   # Get EC2 developer count
   SQL <- paste("SELECT DISTINCT acct_dim.account_id
               FROM awsdw_dm_billing.fact_aws_weekly_est_revenue f
@@ -967,7 +968,8 @@ countEC2 <- function(week, year) {
                WHERE
                DIM_ACT.BIZ_PRODUCT_GROUP = 'EC2'
                AND DIM_ACT.BIZ_PRODUCT_NAME IN ('EC2 Instance Usage', 'EC2 RI Leases')  -- EC2 Box Usage and Rerservations
-               AND f.week_begin_date='2015-05-24'        -- Change the Week Begin Date
+               AND f.week_begin_date>='", min(wdates),"'        -- Change the Week Begin Date
+               AND f.week_begin_date <= '", max(wdates), "'
                AND acct_dim.is_internal_flag='N'         -- External accounts only
                AND acct_dim.is_fraud_flag='N'            -- Non Fraud accounts only
                AND f.is_compromised_flag='N'             -- Non Compromised usage only
@@ -1787,3 +1789,4 @@ costHistory <- function() {
   
   return (x)
 }
+
